@@ -51,7 +51,7 @@ def place(mob: Mobject, definition: dict, refs: dict[str, Mobject], region_name:
     relative = any(k in definition for k in DIRECTIONS) or "over" in definition or "within" in definition
     if not relative:
         fit(mob, region, size.get("max_width"), size.get("max_height"))
-        mob.move_to(region.center)
+        mob.move_to(np.array([region.center[0], region.center[1], 0.0]))
         if stack_below > 0:
             total = mob.height + stack_below
             if total > region.height:
