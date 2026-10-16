@@ -51,3 +51,14 @@ def test_lifetimes_and_region_usage():
     assert c.usage_for("title") == (False, False, False)
     # 差分表活着时，题卡钉在顶上、胶囊在底部、后来还有侧栏公式
     assert c.usage_for("table") == (True, True, True)
+
+
+def test_aligned_marks_override_estimates(tmp_path):
+    import json
+
+    beat = {"id": "X", "say": [{"id": "s1", "pace": "normal", "text": "一二{@a}三四五{@b}六"}]}
+    (tmp_path / "X.timing.json").write_text(json.dumps({"cues": [{"start": 0.3, "end": 6.3}], "total": 6.3, "marks": {"s1": {"a": 1.0}}}))
+    t = timing.load(beat, tmp_path)
+    assert t.source == "aligned"
+    assert t.sentences[0].marks["a"] == 1.0  # 真实时刻
+    assert abs(t.sentences[0].marks["b"] - (0.3 + 5 / 6 * 6.0)) < 1e-9  # 没对齐到的书签仍按比例估

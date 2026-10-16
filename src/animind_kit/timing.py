@@ -1,8 +1,8 @@
 """每个 beat 的旁白时间：句子起止，以及书签的时刻。
 
-0.1 还没有 voice 仓库，时间来自 voice 流水线写出的 <beat>.timing.json（§6.7 的 narrate.py 格式）：
-    {"cues": [{"start": 0.3, "end": 6.7}, ...], "total": 27.03}
-书签的时刻按它在句子里的字符位置比例估算，等 voice 接上 Whisper 后换成真实时间戳。
+时间来自 animind-voice 写出的 <beat>.timing.json：
+    {"cues": [{"start": 0.3, "end": 6.7}, ...], "total": 27.03, "marks": {"s1": {"d0": 5.01}}}
+有 marks（animind-voice align 的 Whisper 对齐结果）就用真实书签时刻；没有就按字符位置比例估算。
 """
 
 from __future__ import annotations
@@ -58,11 +58,13 @@ def _mark_fractions(text: str) -> dict[str, float]:
 def load(beat: dict, audio_dir: Path | None) -> BeatTiming:
     say = beat.get("say", [])
     cues, total, source = None, None, "estimated"
+    aligned: dict[str, dict[str, float]] = {}
     if audio_dir is not None:
         path = audio_dir / f"{beat['id']}.timing.json"
         if path.exists():
             data = json.loads(path.read_text(encoding="utf-8"))
             cues, total, source = data["cues"], data["total"], "audio"
+            aligned = data.get("marks", {})  # animind-voice align 写入的真实书签时刻
             if len(cues) != len(say):
                 raise ValueError(f"{path.name} 有 {len(cues)} 句，scene 里 {beat['id']} 有 {len(say)} 句")
     if cues is None:  # 没有音频：按每个汉字 0.22 秒估
@@ -73,9 +75,13 @@ def load(beat: dict, audio_dir: Path | None) -> BeatTiming:
             cursor += seconds + 0.35
         total = cursor
     sentences = []
-    for s, cue in zip(say, cues):
+    for i, (s, cue) in enumerate(zip(say, cues)):
         span = cue["end"] - cue["start"]
         marks = {name: cue["start"] + frac * span for name, frac in _mark_fractions(s["text"]).items()}
+        real = aligned.get(s.get("id") or str(i), {})
+        marks.update({k: v for k, v in real.items() if k in marks})
         sentences.append(Sentence(s.get("id"), cue["start"], cue["end"], marks))
+    if aligned:
+        source = "aligned"
     hold = beat.get("pause", {}).get("hold", 0) if "pause" in beat else 0
     return BeatTiming(sentences, max(total, hold + 1.0), source)
