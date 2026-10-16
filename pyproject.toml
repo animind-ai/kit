@@ -8,6 +8,7 @@ authors = [{ name = "Boxi Yu" }]
 requires-python = ">=3.11,<3.13"
 dependencies = [
   "manim==0.21.0",
+  "moxian",
   "PyYAML>=6.0",
   "scene-spec",
 ]
@@ -17,6 +18,7 @@ animind-kit = "animind_kit.cli:main"
 
 [tool.uv.sources]
 scene-spec = { path = "../scene-spec", editable = true }
+moxian = { path = "../moxian", editable = true }
 
 [dependency-groups]
 dev = ["pytest>=8"]

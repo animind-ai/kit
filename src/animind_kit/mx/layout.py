@@ -1,0 +1,80 @@
+"""墨线版布局：按 scene-spec 的布局字段摆放顶层对象，渲染后做出框 / 重叠检查。"""
+
+from __future__ import annotations
+
+from moxian.core import DOWN, LEFT, RIGHT, UP, BBox, Node
+
+from ..regions import GAPS, PIN_MAX_HEIGHT, PIN_TOP_MARGIN, PIN_WIDTH, Region, check_boxes, regions
+
+DIRECTIONS = {"below": DOWN, "above": UP, "left_of": LEFT, "right_of": RIGHT}
+
+
+def fit(node: Node, region: Region, max_width: float | None = None, max_height: float | None = None) -> Node:
+    mw = region.width * (max_width or 0.96)
+    mh = region.height * (max_height or 0.96)
+    if node.width > mw:
+        node.scale_to_fit_width(mw)
+    if node.height > mh:
+        node.scale_to_fit_height(mh)
+    return node
+
+
+def pin_top(node: Node) -> Node:
+    node.scale_to_fit_width(PIN_WIDTH)
+    if node.height > PIN_MAX_HEIGHT:
+        node.scale_to_fit_height(PIN_MAX_HEIGHT)
+    node.to_edge(UP, margin=PIN_TOP_MARGIN)
+    return node.shift([-node.center()[0], 0.0])
+
+
+def place(node: Node, definition: dict, refs: dict[str, BBox], region_name: str = "stage",
+          stack_below: float = 0.0, usage: tuple[bool, bool, bool] = (True, True, True)) -> Node:
+    """refs：字段名 → 被引用对象在世界坐标里的包围盒。"""
+    if definition.get("pin") == "top":
+        return pin_top(node)
+    if "at" in definition:
+        return node.move_to(definition["at"])
+    region = regions(*usage)[region_name]
+    size = definition.get("size") or {}
+    relative = any(k in definition for k in DIRECTIONS) or "over" in definition or "within" in definition
+    fit(node, region, size.get("max_width"), size.get("max_height"))
+    if not relative:
+        node.move_to(region.center)
+        if stack_below > 0:
+            total = node.height + stack_below
+            if total > region.height:
+                node.scale_to_fit_height(max(0.3, region.height - stack_below))
+                total = node.height + stack_below
+            node.shift([0.0, region.center[1] + total / 2 - node.height / 2 - node.center()[1]])
+    if "within" in definition:
+        inner = refs["within"]
+        if node.width > inner.width * 0.9:
+            node.scale_to_fit_width(inner.width * 0.9)
+        node.move_to(inner.center)
+    if "over" in definition:
+        ref = refs["over"]
+        node.move_to(ref.center)
+        if ref.height < node.height * 0.5:  # 盖在一条横线（填空的下划线）上：坐在线上，不要被线穿过
+            node.shift([0.0, ref.y1 + 0.03 - node.bbox().y0])
+    for key, direction in DIRECTIONS.items():
+        if key in definition:
+            anchor = refs[key]
+            node.next_to(anchor.point(direction), direction, GAPS[definition.get("gap", "md")])
+            if key in ("below", "above"):
+                node.shift([anchor.center[0] - node.center()[0], 0.0])
+    align = definition.get("align") or {}
+    if "x" in align:
+        node.shift([refs["align.x"].center[0] - node.center()[0], 0.0])
+    if "y" in align:
+        node.shift([0.0, refs["align.y"].center[1] - node.center()[1]])
+    return node
+
+
+def check(visible: dict[str, Node], ignore_pairs: set[frozenset[str]], pinned: set[str] = frozenset()) -> list[str]:
+    boxes = {}
+    for name, node in visible.items():
+        b = node.bbox()
+        if b is None or (b.width == 0 and b.height == 0):
+            continue
+        boxes[name] = (b.x0, b.x1, b.y0, b.y1)
+    return check_boxes(boxes, ignore_pairs, pinned)

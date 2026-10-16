@@ -13,6 +13,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "manim" },
+    { name = "moxian" },
     { name = "pyyaml" },
     { name = "scene-spec" },
 ]
@@ -25,6 +26,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "manim", specifier = "==0.21.0" },
+    { name = "moxian", editable = "../moxian" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "scene-spec", editable = "../scene-spec" },
 ]
@@ -361,6 +363,25 @@ wheels = [
 ]
 
 [[package]]
+name = "moxian"
+version = "0.0.1"
+source = { editable = "../moxian" }
+dependencies = [
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "skia-python" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "numpy", specifier = ">=1.26" },
+    { name = "skia-python", specifier = ">=87.0" },
+]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=8" }]
+
+[[package]]
 name = "networkx"
 version = "3.6.1"
 source = { registry = "https://pypi.org/simple" }
@@ -495,6 +516,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/bf/db/7fc19e6f2dc92a966727031389fc2e08b558f0f25eb7403c1119ad4713cd/pluggy-1.7.0.tar.gz", hash = "sha256:d1eaa46ebb595891b860ab086b4d09c8588af65ebd4361b8e8f4bb8920b90ba8", size = 123304, upload-time = "2026-10-15T09:50:58.343Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/40/9e/2b38731e0fc536806f16490e1a12d7f0dc2a1235aa8cc07bcc75416a7daa/pluggy-1.7.0-py3-none-any.whl", hash = "sha256:7dd7b0d8832ba3cb632c306926ded123429211b83641b35dc5c41ad2d34f9bec", size = 27082, upload-time = "2026-10-15T09:50:56.808Z" },
+]
+
+[[package]]
+name = "pybind11"
+version = "3.1.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/76/f3/95b0f40b31df41dbfe6bb0857419c9442c15839cbac4796f1c26ae0b6081/pybind11-3.1.0.tar.gz", hash = "sha256:a1cc06b524ab3edca51f8ad3895f9c4fa20b8b19283173dff4ae781449dc9639", size = 603746, upload-time = "2026-08-06T23:33:00.675Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/33/fd/8762f7ee3e4e4be6d1d846cffb4916dd9bb02b2f800d3603718a0efe494c/pybind11-3.1.0-py3-none-any.whl", hash = "sha256:b8488090f8acffbcb6b5d6a85571a6827a0a2981ffb75e5a0b27b87c4a6b7dd0", size = 319402, upload-time = "2026-08-06T23:32:59.047Z" },
 ]
 
 [[package]]
@@ -829,6 +859,30 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/e2/99/d6ad60fbbe549781dc77d6e32f87c64cf48145c6c38a9e03fa839d2cace9/skia_pathops-0.9.2-pp311-pypy311_pp73-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:49f8b0340316f3a43ac8ee797746018d131b70f0b4d3f40f3d2136bfd8b0ecf5", size = 2339788, upload-time = "2026-02-16T10:30:16.163Z" },
     { url = "https://files.pythonhosted.org/packages/88/34/fa72e85e1d74dd7f39a390639354e6929be241d9a32fe10af8c7927e1fe1/skia_pathops-0.9.2-pp311-pypy311_pp73-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:83b218c84cd04a44f149191076916354413c2071280c49ac717cf3d53ef82319", size = 2027123, upload-time = "2026-02-16T10:30:18.205Z" },
     { url = "https://files.pythonhosted.org/packages/5a/38/846754e2e29a308d08d8b94ed6ff6e6c296dffb0294fd1eeda805eef5092/skia_pathops-0.9.2-pp311-pypy311_pp73-win_amd64.whl", hash = "sha256:e834d60788e112fe53bd9185209ffb7d4e19db2789a40abbd01a25bfc01a5515", size = 1779426, upload-time = "2026-02-16T10:30:20.052Z" },
+]
+
+[[package]]
+name = "skia-python"
+version = "144.0.post2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "pybind11" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/48/6b/25b124ac4063b9fda9a3804c8af15daf04fcb2e95754982c6cb28837351f/skia_python-144.0.post2-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:7408129bf595645f5d895ed6459248611c4931f41417c4f487c34728cefcdf34", size = 11990736, upload-time = "2026-03-19T22:21:07.738Z" },
+    { url = "https://files.pythonhosted.org/packages/e7/7e/06006b5c66517a46ce72a50bcb555e97f0268ee90669000a4618f1791042/skia_python-144.0.post2-cp311-cp311-macosx_11_0_x86_64.whl", hash = "sha256:9aab2147c7160b3c6a367752795a0f53aba9ea7d4361d4406731984915b42208", size = 12150303, upload-time = "2026-03-19T22:21:09.719Z" },
+    { url = "https://files.pythonhosted.org/packages/3f/10/357553e894e3ca50638c04ca11b47c5c9fc6ef1228a04c227be58c2747ea/skia_python-144.0.post2-cp311-cp311-manylinux_2_28_aarch64.whl", hash = "sha256:f8153c29d0b7900abee770f18534763da925ad792a426404a5cce5f57c8c0d7f", size = 13920912, upload-time = "2026-03-19T22:21:11.766Z" },
+    { url = "https://files.pythonhosted.org/packages/fa/23/4bf709dc988dd236280ed3a9723f55582a149592f3143fad31a96ea61a4b/skia_python-144.0.post2-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:81b2bfad60346e05fb457acab5af64274368338c2984099dfd386be54d563279", size = 14367703, upload-time = "2026-03-19T22:21:13.929Z" },
+    { url = "https://files.pythonhosted.org/packages/a0/9b/7c8274d55cc7eb4c3bab17e490b854b2bc636cd8312e2221750da3c2ef35/skia_python-144.0.post2-cp311-cp311-win_amd64.whl", hash = "sha256:e95ab76b3e1859e3dd5402e5ccba1c1a539c5d37a082a3a62e16261a4bebc3f6", size = 10892933, upload-time = "2026-03-19T22:21:16.277Z" },
+    { url = "https://files.pythonhosted.org/packages/bf/b7/4bab30682fd0f29ba220d436992feb284a3f7adca3e0d749b52231d4f92a/skia_python-144.0.post2-cp311-cp311-win_arm64.whl", hash = "sha256:4e343de1e87d1d28f791243377078fa4e0a40274352fc1b59c8e96c620c92183", size = 10460675, upload-time = "2026-03-19T22:21:18.231Z" },
+    { url = "https://files.pythonhosted.org/packages/64/e8/3e8316416a302d38a5e95560383c5a1769f59f943b3685fdceb4ab42445a/skia_python-144.0.post2-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:d8bf9a203448a98324c108bbbfa3a9f94ff8514212ae832a81d2b60a5a7dbbfe", size = 12090279, upload-time = "2026-03-19T22:21:20.216Z" },
+    { url = "https://files.pythonhosted.org/packages/75/76/b434c18948051ce4a71760115bbdfe81ebba690834fcd830a9e14c9955af/skia_python-144.0.post2-cp312-cp312-macosx_11_0_x86_64.whl", hash = "sha256:a4df01d2fc7733748f81acf2d0ace313f6b400d92e5e599d7eb2386a205c501c", size = 12196828, upload-time = "2026-03-19T22:21:22.472Z" },
+    { url = "https://files.pythonhosted.org/packages/14/fa/f60ace54c44ce622a3727df2df5a3a16a07046daa74e2a52bc8bb6755ab5/skia_python-144.0.post2-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:2dc7a62b4e7f9e03c77ac7daefaa96184e505038a99a7461499519642a5297fa", size = 13925370, upload-time = "2026-03-19T22:21:24.722Z" },
+    { url = "https://files.pythonhosted.org/packages/c6/d0/c223526c203fbebcf401c7ddff3736aa03223c22d140671ddb535805d382/skia_python-144.0.post2-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:970404599aa6f6dc19e2ae36ab0a0aabdf14410d1e1974f5deabae9fc9c1b193", size = 14388831, upload-time = "2026-03-19T22:21:26.952Z" },
+    { url = "https://files.pythonhosted.org/packages/d1/e9/fdd00636f4efc89b4daa28a7e7a2e2d52fc4e6e1b1f93c790eaceeb94b81/skia_python-144.0.post2-cp312-cp312-win_amd64.whl", hash = "sha256:2268d85e19dd22181fb780cfc59bfe1df33c9cad9ba0df4bf15ff8ee8b6430e5", size = 10883210, upload-time = "2026-03-19T22:21:29.286Z" },
+    { url = "https://files.pythonhosted.org/packages/da/35/78c97fcba0bfc0cfcb078baaed416780ce8fe45132ebb279903d3025c490/skia_python-144.0.post2-cp312-cp312-win_arm64.whl", hash = "sha256:b3cd83eab87def5475a46a19c130f595f69877bedc291fcc84db2af562480782", size = 10470024, upload-time = "2026-03-19T22:21:31.417Z" },
 ]
 
 [[package]]

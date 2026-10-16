@@ -15,11 +15,12 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--out", type=Path, required=True)
     r.add_argument("--audio", type=Path, help="旁白目录：<beat>.wav 与 <beat>.timing.json")
     r.add_argument("--quality", choices=["l", "m", "h"], default="l")
+    r.add_argument("--backend", choices=["manim", "moxian"], default="moxian", help="渲染引擎，默认墨线")
     args = parser.parse_args(argv)
 
     from .render import render
 
-    summary = render(args.spec, args.out, args.audio, args.quality)
+    summary = render(args.spec, args.out, args.audio, args.quality, backend=args.backend)
     return 1 if summary["layout_problems"] else 0
 
 

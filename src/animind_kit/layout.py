@@ -5,52 +5,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from itertools import combinations
 
 import numpy as np
 from manim import DOWN, LEFT, RIGHT, UP, Mobject, config
 
-MARGIN = 0.3
-GAPS = {"xs": 0.1, "sm": 0.2, "md": 0.4, "lg": 0.7, "xl": 1.0}
-PIN_WIDTH = 12.4
-PIN_MAX_HEIGHT = 2.5
-
-
-@dataclass(frozen=True)
-class Region:
-    name: str
-    x0: float
-    x1: float
-    y0: float
-    y1: float
-
-    @property
-    def center(self) -> np.ndarray:
-        return np.array([(self.x0 + self.x1) / 2, (self.y0 + self.y1) / 2, 0])
-
-    @property
-    def width(self) -> float:
-        return self.x1 - self.x0
-
-    @property
-    def height(self) -> float:
-        return self.y1 - self.y0
-
-
-def regions(top_used: bool = True, side_used: bool = True, footer_used: bool = True) -> dict[str, Region]:
-    """四个区域。没人用 top / side / footer 时，stage 把那块空间也占上。"""
-    w, h = config.frame_width, config.frame_height
-    left, right, top, bottom = -w / 2 + MARGIN, w / 2 - MARGIN, h / 2 - MARGIN, -h / 2 + MARGIN
-    stage_top = top - 2.8 if top_used else top
-    stage_bottom = bottom + 1.1 if footer_used else bottom
-    stage_right = right - 3.6 if side_used else right
-    return {
-        "top": Region("top", left, right, top - 2.6, top),
-        "stage": Region("stage", left, stage_right, stage_bottom, stage_top),
-        "side": Region("side", right - 3.4, right, stage_bottom, stage_top),
-        "footer": Region("footer", left, right, bottom, bottom + 1.0),
-    }
+from .regions import GAPS, MARGIN, PIN_MAX_HEIGHT, PIN_WIDTH, Region, regions  # noqa: E402,F401
 
 
 def fit(mob: Mobject, region: Region, max_width: float | None = None, max_height: float | None = None) -> Mobject:
@@ -106,7 +66,10 @@ def place(mob: Mobject, definition: dict, refs: dict[str, Mobject], region_name:
             mob.scale_to_fit_width(inner.width * 0.9)
         mob.move_to(inner)
     if "over" in definition:
-        mob.move_to(refs["over"])
+        ref = refs["over"]
+        mob.move_to(ref)
+        if ref.height < mob.height * 0.5:  # 盖在一条横线（填空的下划线）上：坐在线上
+            mob.next_to(ref, UP, buff=0.03)
     for key, direction in DIRECTIONS.items():
         if key in definition:
             anchor = refs[key]

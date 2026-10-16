@@ -18,7 +18,7 @@ from manim import (
 
 from scene_spec import selectors
 
-from .. import layout, timing, widgets
+from .. import analysis, layout, timing, widgets
 from ..text import math, plain, rich
 from ..theme import Theme
 
@@ -61,51 +61,10 @@ class Compiler:
         self.data = doc.get("data", {})
         self.state = State()
         self.problems: list[str] = []
-        self.lifetimes = self._lifetimes()
-
-    # ---------- 静态分析：每个对象在哪些 beat 可见，决定区域怎么分 ----------
-
-    def _region_static(self, obj_id: str, depth: int = 0) -> str:
-        d = self.doc["objects"][obj_id]
-        if d.get("pin") == "top":
-            return "top"
-        if "in" in d:
-            return d["in"]
-        for key in ("below", "above", "left_of", "right_of", "over", "within"):
-            if key in d and depth < 10:
-                return self._region_static(selectors.parse(d[key]).obj, depth + 1)
-        return "stage"
-
-    def _lifetimes(self) -> dict[str, set[int]]:
-        """对象 → 可见的 beat 序号集合（按 show / hide / transform-to 静态推算）。"""
-        visible: set[str] = set()
-        life: dict[str, set[int]] = {k: set() for k in self.doc.get("objects", {})}
-        for n, beat in enumerate(self.doc["beats"]):
-            for action in beat.get("do", []):
-                act = action["act"]
-                if act == "show":
-                    visible.add(selectors.parse(action["target"]).obj)
-                elif act == "hide":
-                    visible.discard(selectors.parse(action["target"]).obj)
-                elif act == "transform":
-                    visible.add(selectors.parse(action["to"]).obj)
-                for k in visible:
-                    life[k].add(n)
-            for k in visible:
-                life[k].add(n)
-        return life
+        self.lifetimes = analysis.lifetimes(doc)
 
     def usage_for(self, obj_id: str) -> tuple[bool, bool, bool]:
-        """对象活着的这段时间里，top / side / footer 有没有被别的对象用到。"""
-        mine = self.lifetimes.get(obj_id) or set()
-        used = {"top": False, "side": False, "footer": False}
-        for other, beats in self.lifetimes.items():
-            if other == obj_id or not (beats & mine):
-                continue
-            region = self._region_static(other)
-            if region in used:
-                used[region] = True
-        return used["top"], used["side"], used["footer"]
+        return analysis.usage_for(self.doc, self.lifetimes, obj_id)
 
     # ---------- 对象 ----------
 

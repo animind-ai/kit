@@ -7,12 +7,9 @@ import subprocess
 import wave
 from pathlib import Path
 
-from manim import tempconfig
-
 from scene_spec import check
 from scene_spec.loader import load_file
 
-from .backends.manim_backend import Compiler
 from .theme import theme as load_theme
 
 QUALITY = {"l": "low_quality", "m": "medium_quality", "h": "high_quality"}
@@ -38,7 +35,8 @@ def find_video(media: Path, name: str) -> Path:
     return max(matches, key=lambda p: p.stat().st_mtime)
 
 
-def render(spec: Path, out: Path, audio_dir: Path | None, quality: str = "l", only: list[str] | None = None, log=print) -> dict:
+def render(spec: Path, out: Path, audio_dir: Path | None, quality: str = "l", only: list[str] | None = None, log=print,
+           backend: str = "manim") -> dict:
     doc = load_file(spec)
     report = check(doc)
     for issue in report.issues:
@@ -46,10 +44,24 @@ def render(spec: Path, out: Path, audio_dir: Path | None, quality: str = "l", on
     if not report.ok:
         raise SystemExit("scene-spec 检查未通过，不渲染")
 
-    build = out.parent / f".build-{spec.stem}"
+    build = out.parent / f".build-{spec.stem}-{backend}"
+    theme = load_theme(doc.get("style", {}).get("theme", "paper"))
+
+    if backend == "moxian":
+        from .backends.moxian_backend import MoxianCompiler
+
+        summary = MoxianCompiler(doc, theme, audio_dir, log, quality).render_all(out, build)
+        build.mkdir(parents=True, exist_ok=True)
+        (build / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+        log(f"wrote {out} {summary['seconds']}s；版式问题 {len(summary['layout_problems'])} 条")
+        return summary
+
+    from manim import tempconfig
+
+    from .backends.manim_backend import Compiler
+
     media, parts = build / "media", build / "parts"
     parts.mkdir(parents=True, exist_ok=True)
-    theme = load_theme(doc.get("style", {}).get("theme", "paper"))
     compiler = Compiler(doc, theme, audio_dir, log)
 
     beats = doc["beats"]
