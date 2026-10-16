@@ -35,6 +35,51 @@ def find_video(media: Path, name: str) -> Path:
     return max(matches, key=lambda p: p.stat().st_mtime)
 
 
+SHOWS = ("misconception", "non_example", "landing")
+
+
+def chapters_path(out: Path) -> Path:
+    """成片 x.mp4 旁边的章节文件 x.chapters.json。"""
+    return out.with_suffix(".chapters.json")
+
+
+def chapters(doc: dict, clip_seconds: list[float], video: str = "") -> dict:
+    """播放器用的章节表：每个 beat 一章，起止时间按各段实际时长累加（拼接用 -c copy，成片时间轴就是各段首尾相接）。
+
+    暂停点（预测、想一想、分段）在这一段末尾画面定住的那 hold 秒开始：旁白之后补的 hold 秒总在段尾。
+    style.segmented 为真时每个 beat 末尾都是分段点。
+    """
+    style = doc.get("style", {})
+    meta = doc.get("meta", {})
+    segmented = bool(style.get("segmented", False))
+    out, t = [], 0.0
+    for beat, seconds in zip(doc["beats"], clip_seconds, strict=True):
+        start, end = t, t + seconds
+        shows = beat.get("shows", [])
+        shows = [shows] if isinstance(shows, str) else shows
+        chapter = {"id": beat["id"], "title": beat.get("title", beat["id"]),
+                   "start": round(start, 3), "end": round(end, 3),
+                   "shows": [k for k in shows if k in SHOWS]}
+        if "pause" in beat:
+            p = beat["pause"]
+            hold = float(p.get("hold", 2))
+            pause = {"type": p.get("type"), "prompt": p.get("prompt"), "time": round(max(start, end - hold), 3), "hold": hold}
+            if "app_item" in p:
+                pause["app_item"] = p["app_item"]
+            chapter["pause"] = pause
+        chapter["segment_end"] = segmented or beat.get("pause", {}).get("type") == "segment"
+        out.append(chapter)
+        t = end
+    return {"id": meta.get("id"), "title": meta.get("title"), "video": video, "duration": round(t, 3),
+            "segmented": segmented, "chapters": out}
+
+
+def write_chapters(doc: dict, clip_seconds: list[float], out: Path) -> Path:
+    path = chapters_path(out)
+    path.write_text(json.dumps(chapters(doc, clip_seconds, out.name), ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
+
+
 def render(spec: Path, out: Path, audio_dir: Path | None, quality: str = "l", only: list[str] | None = None, log=print,
            backend: str = "manim") -> dict:
     doc = load_file(spec)
@@ -52,6 +97,7 @@ def render(spec: Path, out: Path, audio_dir: Path | None, quality: str = "l", on
 
         summary = MoxianCompiler(doc, theme, audio_dir, log, quality).render_all(out, build)
         build.mkdir(parents=True, exist_ok=True)
+        summary["chapters"] = str(write_chapters(doc, summary["clip_seconds"], out))
         (build / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
         log(f"wrote {out} {summary['seconds']}s；版式问题 {len(summary['layout_problems'])} 条")
         return summary
@@ -107,6 +153,7 @@ def render(spec: Path, out: Path, audio_dir: Path | None, quality: str = "l", on
     out.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", str(playlist), "-c", "copy", str(out)], check=True)
     summary = {"out": str(out), "seconds": round(probe_seconds(out), 1), "beats": names, "layout_problems": compiler.problems}
+    summary["chapters"] = str(write_chapters(doc, [probe_seconds(c) for c in clips], out))
     (build / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     log(f"wrote {out} {summary['seconds']}s；版式问题 {len(compiler.problems)} 条")
     return summary

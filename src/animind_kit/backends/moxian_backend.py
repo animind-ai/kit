@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import subprocess
 import wave
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -15,8 +16,10 @@ import numpy as np
 from moxian.anim import Animation, CameraMove, Draw, Restyle, Shift, TransformCopy, Wait, Write, fade_in, fade_out, together
 from moxian.anim.camera import focus_on
 from moxian.anim.camera import reset as camera_reset
+from moxian.anim.timeline import Timeline
 from moxian.core import BBox, Camera, Group, Node, PathNode, Style, parent_matrix_of
 from moxian.encode import render_video
+from moxian.path import Path as VPath
 from moxian.path import line, rounded_rect
 from moxian.render import SkiaRenderer
 from scene_spec import selectors
@@ -50,6 +53,63 @@ class Built:
     parts: dict[str, list[Node]] = field(default_factory=dict)
     items: list[Node] = field(default_factory=list)
     placed: bool = False
+
+
+class _Overlay(Animation):
+    """叠加层（强调框、标记底色、圈、划线、叉）的入场。
+
+    几何在 begin() 时才按目标当时的位置和大小算（编译时目标可能还没被布局求解器挪好、
+    或者同一批里正在被 move / slide）；算好后登记成"跟随者"，之后目标再怎么动都跟着走。
+    """
+
+    def __init__(self, inner: Animation, setup: Callable[[], None]):
+        super().__init__(inner.node, inner.duration, inner.ease)
+        self.inner, self.setup = inner, setup
+
+    def begin(self) -> None:
+        super().begin()
+        self.setup()
+        self.inner.duration = self.duration
+        self.inner.begin()
+
+    def interpolate(self, alpha: float) -> None:
+        self.inner.interpolate(alpha)
+
+    def finish(self) -> None:
+        self.inner.finish()
+
+
+class _Detach(Animation):
+    """叠加层的退场：淡出结束后不再跟随目标。"""
+
+    def __init__(self, inner: Animation, done: Callable[[], None]):
+        super().__init__(inner.node, inner.duration, inner.ease)
+        self.inner, self.done = inner, done
+
+    def begin(self) -> None:
+        super().begin()
+        self.inner.duration = self.duration
+        self.inner.begin()
+
+    def interpolate(self, alpha: float) -> None:
+        self.inner.interpolate(alpha)
+
+    def finish(self) -> None:
+        self.inner.finish()
+        self.done()
+
+
+@dataclass
+class _FollowTimeline(Timeline):
+    """每推进一帧，先播动画，再让叠加层追上目标的新位置（同一帧里，不落后一帧）。"""
+
+    follow: Callable[[], None] | None = None
+
+    def seek(self, t: float) -> bool:
+        changed = super().seek(t)
+        if self.follow is not None:
+            self.follow()
+        return changed
 
 
 def wav_seconds(path: Path) -> float:
@@ -86,6 +146,8 @@ class MoxianCompiler:
         self.dimmed: dict[str, list[Node]] = {}
         self.marks: dict[str, Node] = {}
         self.decorations: list[tuple[str, str, Node]] = []
+        # 叠加层 → (挂在哪个节点下, 跟随的目标节点, 叠加层相对目标的世界矩阵)
+        self.followers: dict[int, tuple[Node, Node, Node, np.ndarray]] = {}
         self.ignore_pairs: set[frozenset[str]] = set()
         self.problems: list[str] = []
         self.stats = {"beats": 0, "actions": 0, "cue_late": 0}
@@ -163,6 +225,34 @@ class MoxianCompiler:
         if found is None:  # 引用容器：用它第一个子节点的父亲
             return self.parent_of(target.children[0])
         return found
+
+    def world_matrix(self, node: Node) -> np.ndarray:
+        return parent_matrix_of(self.root, node) @ node.matrix
+
+    def _attach(self, overlay: Node, host: Node, target: Node) -> None:
+        """让 overlay（挂在 host 下）从现在起跟着 target 走：记下它相对 target 的世界矩阵。
+
+        target 是临时打包的引用容器（例如 hole[1:3]）时跟第一个成员走。
+        """
+        members = self._members(target)
+        if not members:
+            return
+        anchor = members[0]
+        rel = np.linalg.inv(self.world_matrix(anchor)) @ self.world_matrix(host) @ overlay.matrix
+        self.followers[id(overlay)] = (overlay, host, anchor, rel)
+
+    def _detach(self, overlay: Node) -> None:
+        self.followers.pop(id(overlay), None)
+
+    def _follow(self) -> None:
+        for overlay, host, anchor, rel in list(self.followers.values()):
+            try:
+                overlay.matrix = np.linalg.inv(self.world_matrix(host)) @ self.world_matrix(anchor) @ rel
+            except ValueError:  # 目标不在树里了
+                self._detach(overlay)
+
+    def _overlay_out(self, overlay: Node, duration: float) -> Animation:
+        return _Detach(fade_out(overlay, duration), lambda: self._detach(overlay))
 
     def to_local(self, node: Node, parent: Node) -> Node:
         """node 现在的矩阵是世界坐标；改成 parent 的局部坐标。"""
@@ -306,14 +396,14 @@ class MoxianCompiler:
                 anims += a
                 run_time = max(run_time, d)
             self._solve_layout(beat["id"], set(self.visible) - before)
+            # 叠加层先 begin：量目标几何时，同一批的书写、变形还没改动路径
+            anims.sort(key=lambda a: not isinstance(a, _Overlay))
             if anims:
                 tl_items.append((start, together(*anims)))
             prev_end = start + run_time
             i = j
 
-        from moxian.anim import Timeline
-
-        tl = Timeline()
+        tl = _FollowTimeline(follow=self._follow)
         for start, anim in tl_items:
             tl.add(start, anim)
         narration = self.audio_dir / f"{beat['id']}.wav" if self.audio_dir else None
@@ -409,7 +499,8 @@ class MoxianCompiler:
                 return [fade_out(n, DEFAULT_DUR["hide"]) for n in self._members(node)], DEFAULT_DUR["hide"]
             extras = self._drop_overlays(sel.obj)
             self.visible.pop(sel.obj, None)
-            return [fade_out(node, DEFAULT_DUR["hide"])] + [fade_out(e, DEFAULT_DUR["hide"]) for e in extras], DEFAULT_DUR["hide"]
+            return ([fade_out(node, DEFAULT_DUR["hide"])] + [self._overlay_out(e, DEFAULT_DUR["hide"]) for e in extras],
+                    DEFAULT_DUR["hide"])
         if act == "transform":
             src = self.resolve(action["from"])
             dst = self.resolve(action["to"], place=True)
@@ -422,19 +513,15 @@ class MoxianCompiler:
         if act == "unfocus":
             return self._unfocus(selectors.parse(action["target"]).obj), DEFAULT_DUR["unfocus"]
         if act == "mark":
-            pad = self._make_mark(action["target"])
-            return [fade_in(pad, DEFAULT_DUR["mark"])], DEFAULT_DUR["mark"]
+            return [self._make_mark(action["target"])], DEFAULT_DUR["mark"]
         if act == "unmark":
             pad = self.marks.pop(action["target"], None)
-            return ([fade_out(pad, DEFAULT_DUR["unmark"])] if pad else []), DEFAULT_DUR["unmark"]
+            return ([self._overlay_out(pad, DEFAULT_DUR["unmark"])] if pad else []), DEFAULT_DUR["unmark"]
         if act == "clear":
             extras = self._drop_overlays(selectors.parse(action["target"]).obj, keep_focus=True)
-            return [fade_out(e, DEFAULT_DUR["clear"]) for e in extras], DEFAULT_DUR["clear"]
+            return [self._overlay_out(e, DEFAULT_DUR["clear"]) for e in extras], DEFAULT_DUR["clear"]
         if act in ("underline", "circle", "cross"):
-            deco = self._decoration(act, action["target"])
-            self.decorations.append((act, action["target"], deco))
-            d = DEFAULT_DUR[act]
-            return [Draw(deco, d) if act != "cross" else fade_in(deco, d)], d
+            return [self._decoration(act, action["target"])], DEFAULT_DUR[act]
         if act == "set":
             node = self.resolve(action["target"])
             changes = {}
@@ -500,16 +587,21 @@ class MoxianCompiler:
                 return custom
         node = self.resolve(target)
         anims = list(self._unfocus(sel.obj, fade=True))
-        box = self.wbox(node)
-        frame = PathNode(path=rounded_rect(box.width + 0.16, box.height + 0.16, 0.08),
-                         style=Style(stroke=self.t.HL_INK, stroke_width=2.5, opacity=0.0))
-        frame.move_to(box.center)
+        frame = PathNode(style=Style(stroke=self.t.HL_INK, stroke_width=2.5, opacity=0.0))
         self.root.add(frame)
+
+        def setup() -> None:
+            box = self.wbox(node)
+            frame.path = rounded_rect(box.width + 0.16, box.height + 0.16, 0.08)
+            frame.matrix = np.eye(3)
+            frame.move_to(box.center)
+            self._attach(frame, self.root, node)
+
         self.focus_boxes[sel.obj] = frame
         selected = set(id(c) for c in node.children) | {id(node)}
         siblings = [m for m in built.items if id(m) not in selected]
         self.dimmed[sel.obj] = siblings
-        anims.append(fade_in(frame, DEFAULT_DUR["focus"]))
+        anims.append(_Overlay(fade_in(frame, DEFAULT_DUR["focus"]), setup))
         anims += [Restyle(s, DEFAULT_DUR["focus"], opacity=0.45) for s in siblings]
         return anims
 
@@ -522,37 +614,54 @@ class MoxianCompiler:
                 anims += custom
         frame = self.focus_boxes.pop(obj_id, None)
         if frame is not None:
-            anims.append(fade_out(frame, DEFAULT_DUR["unfocus"]))
+            anims.append(self._overlay_out(frame, DEFAULT_DUR["unfocus"]))
         for s in self.dimmed.pop(obj_id, []):
             anims.append(Restyle(s, DEFAULT_DUR["unfocus"], opacity=1.0))
         return anims
 
-    def _make_mark(self, target: str) -> Node:
+    def _make_mark(self, target: str) -> Animation:
+        """标记底色挂在目标的父节点下、画在目标后面（z=-1），大小和位置到入场时才算。"""
         node = self.resolve(target)
-        box = self.wbox(node)
-        pad = PathNode(path=rounded_rect(box.width + 0.2, box.height + 0.16, 0.08),
-                       style=Style(fill=self.t.MARK, opacity=0.0), z=-1)
-        pad.move_to(box.center)
+        pad = PathNode(style=Style(fill=self.t.MARK, opacity=0.0), z=-1)
         parent = self.parent_of(node)
-        self.to_local(pad, parent)
         parent.add(pad)
-        self.marks[target] = pad
-        return pad
 
-    def _decoration(self, act: str, target: str) -> PathNode:
+        def setup() -> None:
+            box = self.wbox(node)
+            pad.path = rounded_rect(box.width + 0.2, box.height + 0.16, 0.08)
+            pad.matrix = np.eye(3)
+            pad.move_to(box.center)
+            self.to_local(pad, parent)
+            self._attach(pad, parent, node)
+
+        self.marks[target] = pad
+        return _Overlay(fade_in(pad, DEFAULT_DUR["mark"]), setup)
+
+    def _decoration(self, act: str, target: str) -> Animation:
         node = self.resolve(target)
-        box = self.wbox(node)
-        if act == "underline":
-            y = box.y0 - 0.06
-            deco = PathNode(path=line(box.x0, y, box.x1, y), style=Style(stroke=self.t.HL_INK, stroke_width=4, opacity=0.0))
-        elif act == "circle":
-            deco = PathNode(path=rounded_rect(box.width + 0.2, box.height + 0.2, 0.12),
-                            style=Style(stroke=self.t.HL_INK, stroke_width=3, opacity=0.0)).move_to(box.center)
+        if act == "cross":
+            style = Style(stroke=self.t.NO, stroke_width=4, opacity=0.0)
         else:
-            path = line(box.x0, box.y0, box.x1, box.y1).extend(line(box.x0, box.y1, box.x1, box.y0))
-            deco = PathNode(path=path, style=Style(stroke=self.t.NO, stroke_width=4, opacity=0.0))
+            style = Style(stroke=self.t.HL_INK, stroke_width=4 if act == "underline" else 3, opacity=0.0)
+        deco = PathNode(path=VPath(), style=style)
         self.root.add(deco)
-        return deco
+        self.decorations.append((act, target, deco))
+
+        def setup() -> None:
+            box = self.wbox(node)
+            deco.matrix = np.eye(3)
+            if act == "underline":
+                y = box.y0 - 0.06
+                deco.path = line(box.x0, y, box.x1, y)
+            elif act == "circle":
+                deco.path = rounded_rect(box.width + 0.2, box.height + 0.2, 0.12)
+                deco.move_to(box.center)
+            else:
+                deco.path = line(box.x0, box.y0, box.x1, box.y1).extend(line(box.x0, box.y1, box.x1, box.y0))
+            self._attach(deco, self.root, node)
+
+        d = DEFAULT_DUR[act]
+        return _Overlay(Draw(deco, d) if act != "cross" else fade_in(deco, d), setup)
 
     def _drop_overlays(self, obj_id: str, keep_focus: bool = False) -> list[Node]:
         extras: list[Node] = []
@@ -587,4 +696,5 @@ class MoxianCompiler:
         out.parent.mkdir(parents=True, exist_ok=True)
         subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", str(playlist), "-c", "copy", str(out)], check=True)
         return {"out": str(out), "seconds": round(probe_seconds(out), 1), "beats": [b["id"] for b in self.doc["beats"]],
+                "clip_seconds": [probe_seconds(c) for c in clips],
                 "layout_problems": self.problems, "stats": self.stats}
