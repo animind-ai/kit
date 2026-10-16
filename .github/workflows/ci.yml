@@ -1,0 +1,45 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# kit 以可编辑路径依赖同级目录的 scene-spec 和 moxian，所以三个仓库并排检出
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: kit
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: kit
+      - uses: actions/checkout@v4
+        with:
+          repository: animind-ai/scene-spec
+          path: scene-spec
+      - uses: actions/checkout@v4
+        with:
+          repository: animind-ai/moxian
+          path: moxian
+      - name: System deps (CJK font, LaTeX + dvisvgm, ffmpeg, Cairo/Pango for the Manim backend)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends fonts-noto-cjk texlive-latex-base texlive-latex-extra \
+            texlive-fonts-recommended texlive-xetex texlive-lang-chinese dvisvgm ffmpeg \
+            libcairo2-dev libpango1.0-dev pkg-config
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - run: uv sync
+      - run: uvx ruff check .
+      - run: uv run pytest -q
+      - name: Screenshot regression (moxian backend, both scene-spec examples)
+        run: uv run animind-kit regress
+      # 失败时，或者 Linux 还没有基准图时，把渲染出的末帧传上来；检查后放进 tests/baseline/linux/
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: regress-frames
+          path: kit/build/regress

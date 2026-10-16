@@ -21,7 +21,24 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--out", type=Path, required=True, help="输出目录")
     c.add_argument("--audio", type=Path)
     c.add_argument("--quality", choices=["l", "m", "h"], default="l")
+    g = sub.add_parser("regress", help="截图回归：渲染示例末帧，和 tests/baseline 比对")
+    g.add_argument("--update", action="store_true", help="用当前结果覆盖基准图")
     args = parser.parse_args(argv)
+
+    if args.command == "regress":
+        from .regress import run
+
+        results = run(args.update)
+        for r in results:
+            if r.status != "ok":
+                print(f"  {r}")
+        bad = [r for r in results if r.status in ("changed", "missing")]
+        new = [r for r in results if r.status == "new"]
+        if not results:
+            print("基准图已更新")
+        else:
+            print(f"截图回归：{len(results) - len(bad) - len(new)} 段一致，{len(bad)} 段有变化，{len(new)} 段没有基准图")
+        return 1 if bad else 0
 
     if args.command == "compare":
         from .compare import compare

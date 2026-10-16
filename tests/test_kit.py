@@ -62,3 +62,23 @@ def test_aligned_marks_override_estimates(tmp_path):
     assert t.source == "aligned"
     assert t.sentences[0].marks["a"] == 1.0  # 真实时刻
     assert abs(t.sentences[0].marks["b"] - (0.3 + 5 / 6 * 6.0)) < 1e-9  # 没对齐到的书签仍按比例估
+
+
+def test_regress_compare_detects_change(tmp_path):
+    import skia
+
+    from animind_kit.regress import compare
+
+    def png(path, color):
+        surface = skia.Surface(64, 36)
+        with surface as canvas:
+            canvas.clear(color)
+        surface.makeImageSnapshot().save(str(path), skia.kPNG)
+        return path
+
+    a = png(tmp_path / "a.png", skia.ColorWHITE)
+    b = png(tmp_path / "b.png", skia.ColorWHITE)
+    c = png(tmp_path / "c.png", skia.ColorBLACK)
+    assert compare(a, b) == (0.0, 0.0)
+    mean, fraction = compare(a, c)
+    assert mean > 200 and fraction == 1.0
