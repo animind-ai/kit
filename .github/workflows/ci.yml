@@ -28,7 +28,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends fonts-noto-cjk texlive-latex-base texlive-latex-extra \
             texlive-fonts-recommended texlive-xetex texlive-lang-chinese dvisvgm ffmpeg \
-            libcairo2-dev libpango1.0-dev pkg-config
+            libcairo2-dev libpango1.0-dev pkg-config libegl1 libgl1  # 后两个是 skia-python 导入时需要的
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.12"
