@@ -12,9 +12,8 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import numpy as np
-from moxian.anim import Animation, Draw, Restyle, Shift, Wait, fade_in, fade_out, together
+from moxian.anim import Animation, Draw, Restyle, Shift, TransformCopy, Wait, Write, fade_in, fade_out, together
 from moxian.core import BBox, Group, Node, PathNode, Style, parent_matrix_of
-from moxian.core import transform as T
 from moxian.encode import render_video
 from moxian.path import line, rounded_rect
 from moxian.render import SkiaRenderer
@@ -58,24 +57,6 @@ def probe_seconds(path: Path) -> float:
         check=True, capture_output=True, text=True,
     ).stdout.strip()
     return float(out)
-
-
-class FlyFrom(Animation):
-    """从另一个对象的位置飞到自己的位置并淡入。起点在动画开始时才取，编译期不改动目标的位置。"""
-
-    def __init__(self, node: Node, source_center, duration: float = 1.0):
-        super().__init__(node, duration)
-        self.source_center = source_center
-
-    def begin(self) -> None:
-        super().begin()
-        self.final = self.node.matrix.copy()
-        self.delta = np.asarray(self.source_center(), dtype=float) - self.node.center()
-
-    def interpolate(self, alpha: float) -> None:
-        d = self.delta * (1 - alpha)
-        self.node.matrix = T.translate(float(d[0]), float(d[1])) @ self.final
-        self.node.set_style(opacity=alpha)
 
 
 class MoxianCompiler:
@@ -363,6 +344,8 @@ class MoxianCompiler:
             dur = 1.0 if style == "write" else DEFAULT_DUR["show"]
             if sel.span is None and sel.part is None and sel.index is None:
                 self.visible[sel.obj] = node
+                if style == "write":
+                    return [Write(node, dur)], dur
                 return [fade_in(node, dur, shift=(0.0, -0.1))], dur
             # 只显示对象里的某几项：第一次先把对象亮出来、其余项藏起来，之后只淡入指定的项
             built = self.objects[sel.obj]
@@ -386,7 +369,7 @@ class MoxianCompiler:
             to_sel = selectors.parse(action["to"])
             self.visible[to_sel.obj] = dst
             d = DEFAULT_DUR["transform"]
-            return [FlyFrom(dst, lambda: self.wbox(src).center, d)], d
+            return [TransformCopy(self._members(src), dst, self.root, d)], d
         if act == "focus":
             return self._focus(action["target"]), DEFAULT_DUR["focus"]
         if act == "unfocus":

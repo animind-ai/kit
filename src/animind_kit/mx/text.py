@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 
 from moxian.core import DOWN, Group, Node
 from moxian.text import Tex, Text, math
+from moxian.text.font import FULLWIDTH_PUNCT, is_han, spacing_adjustments
 from scene_spec.textmarks import ROLES, Span, parse_object_text
 
 from ..theme import Theme
@@ -87,22 +88,50 @@ def _plain(text: str, size: float, color: str, weight: str = "normal") -> list[N
     return [mtext(text, size, color, weight)]
 
 
-def inline(parts: list[Node], pad: float = 0.03) -> Group:
+def _gap_between(left: Node | None, right: Node) -> float:
+    """混排时两个相邻片段之间的距离（画面单位）。
+
+    汉字和行内公式之间留四分之一个字宽（中西文间距）；紧挨着全角标点不留（标点自带半个字宽的空白）；
+    公式和公式之间留一点点。
+    """
+    if left is None:
+        return 0.0
+    if isinstance(left, Text) and isinstance(right, Text):
+        # 两段文字相接（例如片段边界）：用和段内相同的标点挤压、中西文间距规则
+        a, b = left.text[-1:], right.text[:1]
+        return spacing_adjustments(a + b)[1] * left.em if a and b else 0.0
+    if isinstance(left, Text):
+        ch, em = left.text[-1:] or " ", left.em
+    elif isinstance(right, Text):
+        ch, em = right.text[:1] or " ", right.em
+    else:
+        return 0.06
+    if is_han(ch):
+        return 0.25 * em  # 汉字和公式之间留四分之一个字宽
+    if ch in FULLWIDTH_PUNCT or ch.isspace():
+        return 0.0  # 全角标点自带空白
+    return 0.03  # 连字符等西文标点：只留一点点
+
+
+def inline(parts: list[Node]) -> Group:
     """把若干节点排成一行。
 
-    文字按字体的前进宽度排（空格才不会丢），公式按包围盒排并两侧留 pad；
+    文字按字体的前进宽度排（空格才不会丢），公式按包围盒排；片段之间的距离见 _gap_between。
     文字共用基线（Text 的原点就是基线左端），公式按 x 高度中线对齐到文字。
     """
     row = Group(*parts)
     cursor = 0.0
+    prev: Node | None = None
     for node in parts:
+        cursor += _gap_between(prev, node)
         if isinstance(node, Text):
             node.shift([cursor - float(node.matrix[0, 2]), 0.0])
             cursor += node.advance
         else:
             b = node.bbox()
-            node.shift([cursor + pad - b.x0, 0.0])
-            cursor += b.width + 2 * pad
+            node.shift([cursor - b.x0, 0.0])
+            cursor += b.width
+        prev = node
     base = next((p for p in parts if isinstance(p, Text)), None)
     for node in parts:
         if isinstance(node, Text) or node is base:
