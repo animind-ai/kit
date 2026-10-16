@@ -1,0 +1,67 @@
+{
+  "paper": {
+    "BG": "#F7F3EA",
+    "FG": "#1E2430",
+    "C_A": "#2563A8",
+    "C_B": "#2F7D5B",
+    "C_C": "#C2561F",
+    "C_HL": "#FFD84D",
+    "C_HL_INK": "#B7860B",
+    "C_NO": "#C0392B",
+    "C_DIM": "#9AA0A8"
+  },
+  "chalk": {
+    "BG": "#1E2B27",
+    "FG": "#F1EEE4",
+    "C_A": "#F4A6B7",
+    "C_B": "#9AD9C8",
+    "C_C": "#AFC3F2",
+    "C_HL": "#FFE28A",
+    "C_NO": "#FF8C7A",
+    "C_DIM": "#6F7F79"
+  },
+  "jade": {
+    "BG": "#0E1A1C",
+    "FG": "#E7F0EC",
+    "C_A": "#35C3AE",
+    "C_B": "#F2A35E",
+    "C_C": "#9C8CFF",
+    "C_HL": "#F6C945",
+    "C_NO": "#EF5B5B",
+    "C_DIM": "#5E6E6D"
+  },
+  "xuan": {
+    "BG": "#F3ECDD",
+    "FG": "#22201C",
+    "C_A": "#2D4E87",
+    "C_A_FILL": "#3B74C4",
+    "C_B": "#4A7C59",
+    "C_C": "#B07A2A",
+    "C_HL": "#C8361F",
+    "C_NO": "#5A5550",
+    "C_DIM": "#A79F92"
+  },
+  "blueprint": {
+    "BG": "#0F2A4A",
+    "FG": "#EAF2FF",
+    "C_A": "#9FD3FF",
+    "C_B": "#7FE0C2",
+    "C_C": "#FFB4A2",
+    "C_HL": "#FFE066",
+    "C_NO": "#FF6B6B",
+    "C_DIM": "#5B7BA3",
+    "C_GRID": "#2B4C75"
+  },
+  "riso": {
+    "BG": "#F4F1EA",
+    "FG": "#1B1B3A",
+    "C_A": "#FF48B0",
+    "C_B": "#0078BF",
+    "C_C": "#FFE800",
+    "C_C_INK": "#B39A00",
+    "C_HL": "#6C2E8F",
+    "C_HL_MARK": "#FFE800",
+    "C_NO": "#E4572E",
+    "C_DIM": "#A7A3B5"
+  }
+}
