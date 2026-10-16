@@ -12,8 +12,10 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import numpy as np
-from moxian.anim import Animation, Draw, Restyle, Shift, TransformCopy, Wait, Write, fade_in, fade_out, together
-from moxian.core import BBox, Group, Node, PathNode, Style, parent_matrix_of
+from moxian.anim import Animation, CameraMove, Draw, Restyle, Shift, TransformCopy, Wait, Write, fade_in, fade_out, together
+from moxian.anim.camera import focus_on
+from moxian.anim.camera import reset as camera_reset
+from moxian.core import BBox, Camera, Group, Node, PathNode, Style, parent_matrix_of
 from moxian.encode import render_video
 from moxian.path import line, rounded_rect
 from moxian.render import SkiaRenderer
@@ -28,7 +30,11 @@ from ..theme import Theme
 DEFAULT_DUR = {
     "show": 0.6, "hide": 0.4, "transform": 1.0, "move": 0.8, "focus": 0.4, "unfocus": 0.4,
     "mark": 0.3, "unmark": 0.3, "underline": 0.4, "circle": 0.5, "cross": 0.4, "clear": 0.4, "set": 0.3,
+    "camera": 1.5,
 }
+CAMERA_ZOOM = 2.0  # camera 只给 target 时的默认放大倍数
+CAMERA_MARGIN = 0.5  # fit 时四周留白（画面单位）
+CAMERA_EXEMPT_REGIONS = ("top", "footer")  # 这些区域的对象不跟镜头走
 WIDGET_DUR = 0.5
 LEVELS = {"display": 1.5, "title": 1.25, "body": 1.0, "caption": 0.75}  # scene-spec 的 level → 字号倍数
 CUE_LATE = 0.4
@@ -68,6 +74,7 @@ class MoxianCompiler:
         self.stack_scale: dict[str, float] = {}
         self.pinned_floor: float | None = None
         self.root = Group(name="root")
+        self.camera = Camera()  # 跨 beat 常驻；没用 camera 动作时是原样，渲染逐像素不变
         self.objects: dict[str, Built] = {}
         for obj_id, definition in doc.get("objects", {}).items():
             built = self.build_object(obj_id, definition)
@@ -286,6 +293,7 @@ class MoxianCompiler:
             next_at = self._next_at(actions, j, bt)
             anims: list[Animation] = []
             run_time = 0.0
+            before = set(self.visible)
             for action in batch:
                 self.stats["actions"] += 1
                 a, d = self.animations(action)
@@ -297,6 +305,7 @@ class MoxianCompiler:
                     anim.duration = d
                 anims += a
                 run_time = max(run_time, d)
+            self._solve_layout(beat["id"], set(self.visible) - before)
             if anims:
                 tl_items.append((start, together(*anims)))
             prev_end = start + run_time
@@ -315,7 +324,8 @@ class MoxianCompiler:
             until = max(until, wav_seconds(audio) + 0.28)
         else:
             audio = None
-        renderer = SkiaRenderer(self.width, self.height, background=self.t.BG)
+        self._camera_exempt()
+        renderer = SkiaRenderer(self.width, self.height, background=self.t.BG, camera=self.camera)
         render_video(self.root, tl, clip, renderer, fps=self.fps, audio=audio, until=until, log=lambda *_: None)
         self.stats["beats"] += 1
         pinned = {k for k, v in self.objects.items() if v.definition.get("pin")}
@@ -323,6 +333,27 @@ class MoxianCompiler:
             self.problems.append(f"{beat['id']}: {problem}")
             self.log(f"LAYOUT {beat['id']}: {problem}")
         return until
+
+    def _solve_layout(self, beat_id: str, new: set[str]) -> None:
+        """这一批动作新显示了对象时，让布局求解器把它们和已在画面上的对象分开。
+
+        已经在画面上的对象固定不动（否则会从这一段开头就跳到新位置）；动画在播放时才读 matrix，
+        所以在这里调整新对象是安全的。传对象本身的节点，不传 visible 里可能是临时容器的值。
+        """
+        if not new:
+            return
+        visible = [k for k in self.visible if k in self.objects]
+        pinned = {k for k, v in self.objects.items() if v.definition.get("pin")}
+        problems = layout.resolve(
+            {k: self.objects[k].node for k in visible},
+            {k: self.objects[k].definition for k in visible},
+            {k: self.region(k) for k in visible},
+            self.ignore_pairs,
+            fixed=(set(visible) - new) | pinned,
+        )
+        for p in problems:
+            self.problems.append(f"{beat_id}: {p}")
+            self.log(f"LAYOUT {beat_id}: {p}")
 
     def _next_at(self, actions: list, start: int, bt) -> float | None:
         for a in actions[start:]:
@@ -408,11 +439,39 @@ class MoxianCompiler:
             built.node.matrix = old
             return [Shift(built.node, delta, DEFAULT_DUR["move"])], DEFAULT_DUR["move"]
         if act == "camera":
-            self.log("kit（墨线）0.1 不支持 camera，已跳过")
-            return [], 0.0
+            return self._camera(action, args), DEFAULT_DUR["camera"]
         sel = selectors.parse(action["target"])
         built = self.objects[sel.obj]
         return built.widget.action(act, args), WIDGET_DUR
+
+    # ---------- 镜头 ----------
+
+    def _camera(self, action: dict, args: dict) -> list[Animation]:
+        """{zoom: 倍数} 放大到 target 中心；{fit: true, margin?} 让 target 填满画面；{reset: true} 复位。
+
+        zoom 是相对原样的绝对倍数，不累乘；没有 target 时绕当前中心缩放。
+        """
+        d = DEFAULT_DUR["camera"]
+        if args.get("reset"):
+            return [camera_reset(self.camera, d)]
+        if "target" not in action:
+            return [CameraMove(self.camera, zoom=float(args.get("zoom", CAMERA_ZOOM)), duration=d)]
+        box = self.wbox(self.resolve(action["target"]))
+        if args.get("fit"):
+            return [focus_on(self.camera, box, margin=float(args.get("margin", CAMERA_MARGIN)), duration=d)]
+        return [focus_on(self.camera, box, zoom=float(args.get("zoom", CAMERA_ZOOM)), duration=d)]
+
+    def _camera_exempt(self) -> None:
+        """钉住的对象、top / footer 区域的对象，连同挂在根上的强调框和装饰，都不跟镜头走。"""
+        exempt = {k for k, b in self.objects.items()
+                  if b.definition.get("pin") or self.region_of(k) in CAMERA_EXEMPT_REGIONS}
+        for k in exempt:
+            self.objects[k].node.fixed = True
+            if k in self.focus_boxes:
+                self.focus_boxes[k].fixed = True
+        for _act, sel, deco in self.decorations:
+            if selectors.parse(sel).obj in exempt:
+                deco.fixed = True
 
     # ---------- 强调、标记、装饰 ----------
 

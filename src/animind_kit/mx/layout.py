@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import numpy as np
 from moxian.core import DOWN, LEFT, RIGHT, UP, BBox, Node
 
 from ..regions import GAPS, PIN_MAX_HEIGHT, PIN_TOP_MARGIN, PIN_WIDTH, Region, check_boxes, regions
+from . import solver
 
 DIRECTIONS = {"below": DOWN, "above": UP, "left_of": LEFT, "right_of": RIGHT}
 
@@ -109,3 +111,49 @@ def check(visible: dict[str, Node], ignore_pairs: set[frozenset[str]], pinned: s
             continue
         boxes[name] = (b.x0, b.x1, b.y0, b.y1)
     return check_boxes(boxes, ignore_pairs, pinned)
+
+
+def solver_items(visible: dict[str, Node], definitions: dict[str, dict], fixed: set[str] = frozenset()) -> list[solver.Item]:
+    """可见对象 → 求解器输入。顺序沿用 visible 的插入顺序（即出现顺序）。"""
+    from scene_spec import selectors
+
+    items = []
+    for name, node in visible.items():
+        b = node.bbox()
+        if b is None or (b.width == 0 and b.height == 0):
+            continue
+        d = definitions.get(name, {})
+        anchor = side = None
+        for key in ("below", "above", "left_of", "right_of", "over", "within"):
+            if key in d:
+                sel = selectors.parse(d[key])
+                anchor, side = (sel.obj if sel else None), (key if key in DIRECTIONS else None)
+                break
+        items.append(solver.Item(
+            id=name, box=solver.Box(b.x0, b.y0, b.x1, b.y1), region=name, anchor=anchor, side=side,
+            gap=GAPS[d.get("gap", "md")] if side else solver.DEFAULT_GAP,
+            fixed=name in fixed or "pin" in d or "at" in d,
+        ))
+    return items
+
+
+def resolve(visible: dict[str, Node], definitions: dict[str, dict], region_of: dict[str, Region],
+            ignore_pairs: set[frozenset[str]] = frozenset(), fixed: set[str] = frozenset(),
+            min_scale: float = MIN_SHRINK) -> list[str]:
+    """对同时可见的对象跑布局求解器，把挪动 / 缩放直接作用到节点上，返回解不开的冲突。
+
+    visible：对象名 → 树里的节点（世界坐标 = 节点自身坐标，即 root 的直接子节点）。
+    definitions：对象名 → scene-spec 里的定义（读 below / right_of / over / gap / pin / at）。
+    region_of：对象名 → 它所在的区域；没给的对象不做区域约束。
+    fixed：不许动的对象（已经在画面上的、钉住的）。
+    """
+    items = solver_items(visible, definitions, fixed)
+    region_map = {it.id: region_of[it.id] for it in items if it.id in region_of}
+    for it in items:
+        if it.id not in region_map:
+            it.region = None
+    result = solver.solve(items, region_map, ignore_pairs, min_scale)
+    for adj in result.adjustments:
+        m = np.array([[adj.scale, 0.0, adj.dx], [0.0, adj.scale, adj.dy], [0.0, 0.0, 1.0]])
+        visible[adj.id].apply(m)
+    return result.problems
