@@ -357,6 +357,8 @@ REGISTRY: dict[str, type[Widget]] = {
     "summary": Summary,
     "diff_table": DiffTable,
     "area_model": __import__("animind_kit.mx.area", fromlist=["AreaModel"]).AreaModel,  # 面积模型在 area.py（勾股定理拼图）
+    "graph": __import__("animind_kit.mx.graph", fromlist=["Graph"]).Graph,  # 函数图像在 graph.py（割线、切线、放大）
+    "number_line": __import__("animind_kit.mx.numberline", fromlist=["NumberLine"]).NumberLine,  # 数轴在 numberline.py（分数除法的跳跃）
 }
 
 

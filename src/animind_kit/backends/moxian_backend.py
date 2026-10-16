@@ -505,7 +505,8 @@ class MoxianCompiler:
             src = self.resolve(action["from"])
             dst = self.resolve(action["to"], place=True)
             to_sel = selectors.parse(action["to"])
-            self.visible[to_sel.obj] = dst
+            # 记整个对象的节点：变到某个片段上时，dst 可能是不在树里的临时容器，拿它算包围盒会误报重叠
+            self.visible[to_sel.obj] = self.objects[to_sel.obj].node
             d = DEFAULT_DUR["transform"]
             return [TransformCopy(self._members(src), dst, self.root, d)], d
         if act == "focus":
