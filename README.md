@@ -26,7 +26,15 @@ uv run animind-kit render ../scene-spec/examples/s67-p01.scene.yaml \
   # --backend manim      # 切回 Manim 对照
 ```
 
-墨线后端渲染整支 §6.7 第 01 支（4 分 40 秒）：480p 约 30 秒，720p 约 1 分钟。
+墨线后端渲染整支 §6.7 第 01 支（4 分 40 秒）：480p 约 4 秒，720p 约 9 秒；Manim 后端 480p 约 26 秒，720p 约 24 秒。
+
+每做一集新内容，用两个后端各跑一遍对照，直到墨线跑过十集以上再退役 Manim 后端：
+
+```bash
+uv run animind-kit compare ../scene-spec/examples/s67-p01.scene.yaml --audio /path/to/p01/audio --out build/compare
+```
+
+产物是两支视频、每个 beat 末帧的左右对照图（左 Manim、右墨线）和一份 `report.json`（渲染耗时、版式问题）。
 
 `--audio` 目录里要有每个 beat 的 `<beat>.wav` 和 `<beat>.timing.json`（voice 流水线的输出格式；没有音频的 beat 按每个汉字 0.22 秒估算时长）。`--quality` 取 `l` / `m` / `h`。
 

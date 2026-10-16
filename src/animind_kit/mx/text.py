@@ -48,28 +48,28 @@ def segments(text: str) -> list[tuple[str, Span | None]]:
     return parts
 
 
-def runs(body: str, size: float, color: str) -> list[Node]:
+def runs(body: str, size: float, color: str, weight: str = "normal") -> list[Node]:
     """一段文本里的中文和公式交替：返回节点列表。"""
     out: list[Node] = []
     pos = 0
     for m in _MATH.finditer(body):
         if m.start() > pos:
-            out += _plain(body[pos : m.start()], size, color)
+            out += _plain(body[pos : m.start()], size, color, weight)
         if m.group(1).strip():
             out.append(math(m.group(1), size, color))
         pos = m.end()
     if pos < len(body):
-        out += _plain(body[pos:], size, color)
+        out += _plain(body[pos:], size, color, weight)
     return out
 
 
-def _plain(text: str, size: float, color: str) -> list[Node]:
+def _plain(text: str, size: float, color: str, weight: str = "normal") -> list[Node]:
     text = _UNESCAPE.sub(r"\1", text)
     if not text:
         return []
     if "\\" in text:  # 含 LaTeX 命令（例如 \underline）：整段交给 TeX 的文本模式
         return [Tex(text, size, color)]
-    return [Text(text, size, color)]
+    return [Text(text, size, color, weight=weight)]
 
 
 def inline(parts: list[Node], pad: float = 0.03) -> Group:
@@ -107,7 +107,8 @@ def rich(text: str, theme: Theme, size: float = 30, color: str | None = None) ->
     for body, span in segments(text):
         role = next((c for c in span.classes if c in ROLES), None) if span else None
         piece_color = theme.ink(role) if role else base_color
-        piece_nodes = runs(body, size, piece_color)
+        weight = "bold" if span and "bold" in span.classes else "normal"
+        piece_nodes = runs(body, size, piece_color, weight)
         if span and span.id:
             spans[span.id] = Group(*piece_nodes) if len(piece_nodes) != 1 else piece_nodes[0]
         nodes += piece_nodes
