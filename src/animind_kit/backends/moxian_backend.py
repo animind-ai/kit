@@ -12,14 +12,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
-
 from moxian.anim import Animation, Draw, Fade, Restyle, Shift, Wait, fade_in, fade_out, together
 from moxian.core import BBox, Group, Node, PathNode, Style, parent_matrix_of
 from moxian.encode import render_video
 from moxian.path import line, rounded_rect
 from moxian.render import SkiaRenderer
-from moxian.text import Tex, math
-
+from moxian.text import math
 from scene_spec import selectors
 
 from .. import analysis, timing
@@ -190,7 +188,7 @@ class MoxianCompiler:
     def render_beat(self, beat: dict, clip: Path) -> float:
         bt = timing.load(beat, self.audio_dir)
         tl_items: list[tuple[float, Animation]] = []
-        prev_start, prev_end = 0.0, 0.0
+        prev_end = 0.0
         actions = beat.get("do", [])
         i = 0
         while i < len(actions):
@@ -224,7 +222,7 @@ class MoxianCompiler:
                 run_time = max(run_time, d)
             if anims:
                 tl_items.append((start, together(*anims)))
-            prev_start, prev_end = start, start + run_time
+            prev_end = start + run_time
             i = j
 
         from moxian.anim import Timeline

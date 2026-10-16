@@ -12,7 +12,6 @@ from moxian.anim import Animation, Grow, Restyle, fade_in, together
 from moxian.core import DOWN, LEFT, RIGHT, UP, Group, Node, PathNode, Style, arrange
 from moxian.path import line, rect, rounded_rect
 from moxian.text import Text, math
-
 from scene_spec.selectors import parse_slice
 
 from ..theme import Theme

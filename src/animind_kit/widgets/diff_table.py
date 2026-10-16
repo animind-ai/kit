@@ -5,9 +5,19 @@
 
 from __future__ import annotations
 
-import numpy as np
-from manim import DOWN, LEFT, RIGHT, UP, Animation, FadeIn, GrowFromCenter, Line, Polygon, RoundedRectangle, VGroup, VectorizedPoint
-
+from manim import (
+    DOWN,
+    LEFT,
+    RIGHT,
+    UP,
+    Animation,
+    FadeIn,
+    GrowFromCenter,
+    Line,
+    Polygon,
+    RoundedRectangle,
+    VGroup,
+)
 from scene_spec.selectors import parse_slice
 
 from ..text import math, mixed, plain

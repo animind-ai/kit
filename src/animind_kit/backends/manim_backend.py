@@ -8,18 +8,28 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 from manim import (
-    DOWN, Animation, AnimationGroup, Circle, Cross, FadeIn, FadeOut, Line, Mobject,
-    RoundedRectangle, Scene, SurroundingRectangle, Transform, TransformFromCopy,
-    TransformMatchingTex, VGroup, Write, config,
+    DOWN,
+    Animation,
+    Cross,
+    FadeIn,
+    FadeOut,
+    Line,
+    Mobject,
+    RoundedRectangle,
+    Scene,
+    SurroundingRectangle,
+    Transform,
+    TransformFromCopy,
+    TransformMatchingTex,
+    VGroup,
+    Write,
 )
-
 from scene_spec import selectors
 
 from .. import analysis, layout, timing, widgets
-from ..text import math, plain, rich
+from ..text import math, rich
 from ..theme import Theme
 
 DEFAULT_DUR = {
@@ -137,9 +147,8 @@ class BeatRunner:
             self.visible[obj_id] = built.mob
         for sel in s.marks:
             self.scene.add(self._make_mark(sel))
-        for obj_id, sel in s.focus.items():
-            for a in self._focus_anims(sel, instant=True):
-                pass
+        for sel in s.focus.values():
+            self._focus_anims(sel, instant=True)  # instant=True 直接改画面，不返回动画
         for act, sel in s.decorations:
             deco = self._decoration(act, sel)
             self.decorations.append((act, sel, deco))

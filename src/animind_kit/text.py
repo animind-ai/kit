@@ -5,9 +5,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from manim import MathTex, Tex, TexTemplate, Text, VGroup
-
-from scene_spec.textmarks import ROLES, STYLE_CLASSES, Span, parse_object_text
+from manim import MathTex, Tex, Text, TexTemplate, VGroup
+from scene_spec.textmarks import ROLES, Span, parse_object_text
 
 from .theme import Theme
 

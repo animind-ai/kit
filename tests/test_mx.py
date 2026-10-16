@@ -3,13 +3,13 @@
 from pathlib import Path
 
 import numpy as np
+from moxian.text import Text
 from scene_spec.loader import load_file
 
 from animind_kit import theme
 from animind_kit.backends.moxian_backend import MoxianCompiler
 from animind_kit.mx import layout, widgets
 from animind_kit.mx.text import inline, rich, segments
-from moxian.text import Text
 
 EXAMPLE = Path(__file__).resolve().parents[2] / "scene-spec" / "examples" / "s67-p01.scene.yaml"
 T = theme.theme("paper")

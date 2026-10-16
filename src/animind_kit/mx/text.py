@@ -9,9 +9,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from moxian.core import DOWN, RIGHT, Group, Node
+from moxian.core import DOWN, Group, Node
 from moxian.text import Tex, Text, math
-
 from scene_spec.textmarks import ROLES, Span, parse_object_text
 
 from ..theme import Theme
