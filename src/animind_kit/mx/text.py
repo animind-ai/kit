@@ -15,6 +15,22 @@ from scene_spec.textmarks import ROLES, Span, parse_object_text
 
 from ..theme import Theme
 
+# kit 的字号沿用 Manim 的直觉（同一个数字在 Manim 里约大 1.4 倍）；交给墨线前统一换算
+SCALE = 1.4
+
+
+def mtext(text: str, size: float, color: str, weight: str = "normal") -> Text:
+    return Text(text, size * SCALE, color, weight=weight)
+
+
+def mmath(tex: str, size: float, color: str) -> Node:
+    return math(tex, size * SCALE, color)
+
+
+def mtex(tex: str, size: float, color: str) -> Node:
+    return Tex(tex, size * SCALE, color)
+
+
 _UNESCAPE = re.compile(r"\\([\[\]{}])")
 _MATH = re.compile(r"\$([^$]*)\$")
 
@@ -55,7 +71,7 @@ def runs(body: str, size: float, color: str, weight: str = "normal") -> list[Nod
         if m.start() > pos:
             out += _plain(body[pos : m.start()], size, color, weight)
         if m.group(1).strip():
-            out.append(math(m.group(1), size, color))
+            out.append(mmath(m.group(1), size, color))
         pos = m.end()
     if pos < len(body):
         out += _plain(body[pos:], size, color, weight)
@@ -67,8 +83,8 @@ def _plain(text: str, size: float, color: str, weight: str = "normal") -> list[N
     if not text:
         return []
     if "\\" in text:  # 含 LaTeX 命令（例如 \underline）：整段交给 TeX 的文本模式
-        return [Tex(text, size, color)]
-    return [Text(text, size, color, weight=weight)]
+        return [mtex(text, size, color)]
+    return [mtext(text, size, color, weight)]
 
 
 def inline(parts: list[Node], pad: float = 0.03) -> Group:

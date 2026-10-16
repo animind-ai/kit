@@ -27,14 +27,14 @@ def pin_top(node: Node) -> Node:
     return node.shift([-node.center()[0], 0.0])
 
 
-def place(node: Node, definition: dict, refs: dict[str, BBox], region_name: str = "stage",
-          stack_below: float = 0.0, usage: tuple[bool, bool, bool] = (True, True, True)) -> Node:
+def place(node: Node, definition: dict, refs: dict[str, BBox], region: Region | None = None,
+          stack_below: float = 0.0) -> Node:
     """refs：字段名 → 被引用对象在世界坐标里的包围盒。"""
     if definition.get("pin") == "top":
         return pin_top(node)
     if "at" in definition:
         return node.move_to(definition["at"])
-    region = regions(*usage)[region_name]
+    region = region or regions()["stage"]
     size = definition.get("size") or {}
     relative = any(k in definition for k in DIRECTIONS) or "over" in definition or "within" in definition
     fit(node, region, size.get("max_width"), size.get("max_height"))
@@ -59,7 +59,18 @@ def place(node: Node, definition: dict, refs: dict[str, BBox], region_name: str 
     for key, direction in DIRECTIONS.items():
         if key in definition:
             anchor = refs[key]
-            node.next_to(anchor.point(direction), direction, GAPS[definition.get("gap", "md")])
+            gap = GAPS[definition.get("gap", "md")]
+            if key in ("left_of", "right_of"):
+                # 横向放不下：先在剩余宽度里缩（最多缩到 60%），还不行就改放到锚点下方
+                room = (region.x1 - anchor.x1 - gap) if key == "right_of" else (anchor.x0 - gap - region.x0)
+                if node.width > room:
+                    if room >= node.width * MIN_SHRINK:
+                        node.scale(room / node.width)
+                    else:
+                        node.next_to(anchor.point(DOWN), DOWN, gap)
+                        node.shift([anchor.x0 - node.bbox().x0, 0.0])
+                        continue
+            node.next_to(anchor.point(direction), direction, gap)
             if key in ("below", "above"):
                 node.shift([anchor.center[0] - node.center()[0], 0.0])
     align = definition.get("align") or {}
@@ -67,6 +78,26 @@ def place(node: Node, definition: dict, refs: dict[str, BBox], region_name: str 
         node.shift([refs["align.x"].center[0] - node.center()[0], 0.0])
     if "y" in align:
         node.shift([0.0, refs["align.y"].center[1] - node.center()[1]])
+    return clamp(node, region)
+
+
+MIN_SHRINK = 0.6
+
+
+def clamp(node: Node, region: Region) -> Node:
+    """超出区域的推回区域内；比区域还宽 / 高就先缩到能放下。"""
+    b = node.bbox()
+    if b is None:
+        return node
+    if b.width > region.width:
+        node.scale(region.width / b.width)
+    if b.height > region.height:
+        node.scale(region.height / b.height)
+    b = node.bbox()
+    dx = max(0.0, region.x0 - b.x0) - max(0.0, b.x1 - region.x1)
+    dy = max(0.0, region.y0 - b.y0) - max(0.0, b.y1 - region.y1)
+    if dx or dy:
+        node.shift([dx, dy])
     return node
 
 

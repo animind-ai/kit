@@ -24,21 +24,30 @@ def region_static(doc: dict, obj_id: str, depth: int = 0) -> str:
 
 
 def lifetimes(doc: dict) -> dict[str, set[int]]:
-    """对象 → 可见的 beat 序号集合。"""
+    """对象 → 占着画面的 beat 序号集合。
+
+    一个对象算占着第 n 个 beat，当且仅当它在这个 beat 里被显示过，或者到这个 beat 结束时仍然可见。
+    一进 beat 就被隐藏的对象（上一段留下、这一段开头就收掉）不算，免得白占区域。
+    """
     visible: set[str] = set()
     life: dict[str, set[int]] = {k: set() for k in doc.get("objects", {})}
     for n, beat in enumerate(doc["beats"]):
+        shown: set[str] = set()
         for action in beat.get("do", []):
             act = action["act"]
             if act == "show":
-                visible.add(selectors.parse(action["target"]).obj)
+                obj = selectors.parse(action["target"]).obj
+                visible.add(obj)
+                shown.add(obj)
             elif act == "hide":
-                visible.discard(selectors.parse(action["target"]).obj)
+                sel = selectors.parse(action["target"])
+                if sel.span is None and sel.part is None and sel.index is None:
+                    visible.discard(sel.obj)
             elif act == "transform":
-                visible.add(selectors.parse(action["to"]).obj)
-            for k in visible:
-                life[k].add(n)
-        for k in visible:
+                obj = selectors.parse(action["to"]).obj
+                visible.add(obj)
+                shown.add(obj)
+        for k in visible | shown:
             life[k].add(n)
     return life
 

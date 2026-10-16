@@ -8,14 +8,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from moxian.anim import Animation, Grow, Restyle, fade_in, together
+from moxian.anim import Animation, Grow, Restyle, fade_in, fade_out, together
 from moxian.core import DOWN, LEFT, RIGHT, UP, Group, Node, PathNode, Style, arrange
 from moxian.path import line, rect, rounded_rect
-from moxian.text import Text, math
 from scene_spec.selectors import parse_slice
 
 from ..theme import Theme
-from .text import rich
+from .text import mmath, mtext, rich
 
 
 @dataclass
@@ -51,6 +50,7 @@ class Widget:
 
 class ProblemCard(Widget):
     name = "problem_card"
+    ANSWER_PAD = 1.9  # 有答案时卡片右侧留白（画面单位，按 30px 字号排版时）
 
     def build(self) -> Built:
         t = self.theme
@@ -61,12 +61,125 @@ class ProblemCard(Widget):
             spans.update(r.spans)
         arrange(lines, DOWN, gap=0.2, align=LEFT)
         body = Group(*lines)
-        w, h = body.width + 0.6, body.height + 0.42
+        answers = self.definition.get("answers")
+        pad = self.ANSWER_PAD if answers else 0.0
+        w, h = body.width + 0.6 + pad, body.height + 0.42
         bg = PathNode(path=rounded_rect(w, h, 0.14), style=Style(fill=t.CARD))
         bar = PathNode(path=rect(0.08, h - 0.24), style=Style(fill=t.color(self.definition.get("role"), t.HL_INK)))
-        bg.move_to(body.center())
+        bg.move_to(body.center() + [pad / 2, 0.0])
         bar.move_to([bg.edge(LEFT)[0] + 0.14, bg.center()[1]])
-        return Built(Group(bg, bar, body), spans=spans, items=lines)
+        card = Group(bg, bar, body)
+        parts: dict[str, list[Node]] = {}
+        if answers:
+            # 答案写在右侧留白里，和对应那一行对齐；一开始隐藏，show card.answer[i] 时出现
+            slots: list[Node] = []
+            x = bg.edge(RIGHT)[0] - pad / 2 - 0.05
+            for line, tex in zip(lines, answers):
+                if tex is None:
+                    slots.append(Group())
+                    continue
+                tag = rich(tex, t, size=30, color=t.HL_INK).node
+                if tag.width > pad - 0.2:
+                    tag.scale_to_fit_width(pad - 0.2)
+                tag.move_to([x, line.center()[1]])
+                tag.set_style(opacity=0.0)
+                card.add(tag)
+                slots.append(tag)
+            parts["answer"] = slots
+        return Built(card, spans=spans, parts=parts, items=lines)
+
+
+# ---------- 对齐的等式组 ----------
+
+class Equations(Widget):
+    """多行等式按对齐点（& 的位置，没有 & 时按第一个 =）对齐，每行一个 item，可以逐行 show。"""
+
+    name = "equations"
+    SIZE = 40
+    GAP = 0.32
+
+    def build(self) -> Built:
+        t = self.theme
+        rows: list[Group] = []
+        for row in self.definition["rows"]:
+            tex, role = (row, None) if isinstance(row, str) else (row["tex"], row.get("role"))
+            color = t.ink(role) if role else t.FG
+            if "&" in tex:
+                left_tex, right_tex = tex.split("&", 1)
+            elif "=" in tex:
+                left_tex, right_tex = tex.split("=", 1)
+                right_tex = "=" + right_tex
+            else:
+                left_tex, right_tex = "", tex
+            left = mmath(r"\displaystyle " + left_tex, self.SIZE, color) if left_tex.strip() else Group()
+            right = mmath(r"\displaystyle {}" + right_tex, self.SIZE, color)
+            rows.append(Group(left, right))
+        # 右半边的左端排在同一条竖线上；左半边右对齐到这条线
+        x = 0.0
+        y = 0.0
+        for row in rows:
+            left, right = row.children
+            right.shift([x + 0.08 - right.bbox().x0, 0.0])
+            if left.children:
+                left.shift([x - 0.08 - left.bbox().x1, 0.0])
+                # 公式按各自包围盒排，竖直方向以右半边为准
+                left.shift([0.0, right.center()[1] - left.center()[1]])
+            row.shift([0.0, y - row.bbox().y1])
+            y = row.bbox().y0 - self.GAP
+        return Built(Group(*rows), items=rows)
+
+
+# ---------- 数列格子 ----------
+
+class SeqCells(Widget):
+    """一排带标签的格子：b_1 b_2 b_3 …；前 known 个显示数值，其余显示问号，fill 时换成数值并垫色。"""
+
+    name = "seq_cells"
+    GAP = 0.9
+
+    def build(self) -> Built:
+        t = self.theme
+        values, labels = self.definition["values"], self.definition["labels"]
+        known = self.definition.get("known", len(values))
+        columns, self.values, self.unknown, self.pads = [], [], [], []
+        for i, (v, lab) in enumerate(zip(values, labels)):
+            label = mmath(str(lab), 30, t.DIM)
+            value = mmath(str(v), 46, t.A if i < known else t.HL_INK)
+            col = Group(label, value)
+            value.next_to(label, DOWN, 0.12)
+            value.shift([label.center()[0] - value.center()[0], 0.0])
+            q = mmath("?", 46, t.HL_INK)
+            q.move_to(value.center())
+            pad = PathNode(path=rounded_rect(max(value.width, 0.3) + 0.3, value.height + 0.2, 0.1),
+                           style=Style(fill=t.MARK, opacity=0.0), z=-1)
+            pad.move_to(value.center())
+            col.add(pad)
+            if i >= known:
+                value.set_style(opacity=0.0)
+                col.add(q)
+            else:
+                q.set_style(opacity=0.0)
+            columns.append(col)
+            self.values.append(value)
+            self.unknown.append(q)
+            self.pads.append(pad)
+        arrange(columns, RIGHT, gap=self.GAP)
+        node = Group(*columns)
+        if self.definition.get("dots"):
+            dots = mmath(r"\cdots", 46, t.DIM)
+            dots.next_to(columns[-1], RIGHT, 0.5)
+            dots.shift([0.0, self.values[-1].center()[1] - dots.center()[1]])
+            node.add(dots)
+        return Built(node, parts={"value": self.values}, items=columns)
+
+    def action(self, act: str, args: dict) -> list[Animation]:
+        if act != "fill":
+            raise KeyError(act)
+        start, stop = parse_slice(args["index"])
+        anims = []
+        for i in range(start, stop):
+            anims.append(together(fade_out(self.unknown[i], 0.3), fade_in(self.pads[i], 0.4), Grow(self.values[i], 0.5)))
+        return anims
 
 
 # ---------- 步骤胶囊 ----------
@@ -78,11 +191,12 @@ class Chips(Widget):
         t = self.theme
         self.ink = t.color(self.definition.get("role"), t.A)
         self.bgs: list[PathNode] = []
-        self.labels: list[Text] = []
+        self.labels: list[Node] = []
         chips = []
         for text in self.definition["items"]:
-            label = Text(text, 22, self.ink)
-            bg = PathNode(path=rounded_rect(label.width + 0.4, 0.5, 0.25), style=Style(fill=t.CARD))
+            label = mtext(text, 22, self.ink)
+            h = max(0.5, label.height + 0.28)
+            bg = PathNode(path=rounded_rect(label.width + 0.45, h, h / 2), style=Style(fill=t.CARD))
             bg.move_to(label.center())
             chips.append(Group(bg, label))
             self.bgs.append(bg)
@@ -131,8 +245,9 @@ class Summary(Widget):
         rows = []
         for row in self.definition["rows"]:
             color = t.color(row.get("role"), t.A)
-            tag = Text(row["tag"], 22, t.BG)
-            badge_bg = PathNode(path=rounded_rect(max(1.5, tag.width + 0.4), 0.5, 0.25), style=Style(fill=color))
+            tag = mtext(row["tag"], 22, t.BG)
+            h = max(0.5, tag.height + 0.28)
+            badge_bg = PathNode(path=rounded_rect(max(1.5, tag.width + 0.45), h, h / 2), style=Style(fill=color))
             badge_bg.move_to(tag.center())
             badge = Group(badge_bg, tag)
             body = rich(row["text"], t, size=28).node
@@ -166,13 +281,13 @@ class DiffTable(Widget):
         for r, values in enumerate(self.values):
             row = []
             for i, v in enumerate(values):
-                m = math(str(v), 42, self.colors[r]).move_to([x0 + i * COL + r * COL / 2, y0 - r * ROW])
+                m = mmath(str(v), 42, self.colors[r]).move_to([x0 + i * COL + r * COL / 2, y0 - r * ROW])
                 if i >= self.shown[r]:
                     m.set_style(opacity=0.0)
                 row.append(m)
             self.cells.append(row)
-            label = Group(math(rows[r].get("label", f"${rows[r]['data']}$"), 34, self.colors[r]),
-                          Text(rows[r].get("name", ""), 17, self.colors[r]))
+            label = Group(mmath(rows[r].get("label", f"${rows[r]['data']}$"), 34, self.colors[r]),
+                          mtext(rows[r].get("name", ""), 17, self.colors[r]))
             arrange(list(label), DOWN, gap=0.06)
             label.move_to([x0 - 1.25, y0 - r * ROW])
             table.add(label)
@@ -235,6 +350,8 @@ class DiffTable(Widget):
 
 REGISTRY: dict[str, type[Widget]] = {
     "problem_card": ProblemCard,
+    "equations": Equations,
+    "seq_cells": SeqCells,
     "chips": Chips,
     "think_box": ThinkBox,
     "summary": Summary,

@@ -56,7 +56,7 @@ def test_place_pins_and_stacks():
     assert abs(card.width - layout.PIN_WIDTH) < 1e-6 and abs(card.center()[0]) < 1e-6
     assert card.bbox().y1 > 3.5
     text = rich("标题", T, 36).node
-    layout.place(text, {"in": "stage"}, {}, "stage", stack_below=0.0, usage=(False, False, False))
+    layout.place(text, {"in": "stage"}, {}, layout.regions(False, False, False)["stage"])
     assert np.allclose(text.center(), [0, 0], atol=1e-6)
 
 

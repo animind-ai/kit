@@ -8,21 +8,22 @@ from __future__ import annotations
 
 import subprocess
 import wave
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import numpy as np
-from moxian.anim import Animation, Draw, Fade, Restyle, Shift, Wait, fade_in, fade_out, together
+from moxian.anim import Animation, Draw, Restyle, Shift, Wait, fade_in, fade_out, together
 from moxian.core import BBox, Group, Node, PathNode, Style, parent_matrix_of
+from moxian.core import transform as T
 from moxian.encode import render_video
 from moxian.path import line, rounded_rect
 from moxian.render import SkiaRenderer
-from moxian.text import math
 from scene_spec import selectors
 
 from .. import analysis, timing
 from ..mx import layout, widgets
-from ..mx.text import rich
+from ..mx.text import mmath, rich
+from ..regions import Region
 from ..theme import Theme
 
 DEFAULT_DUR = {
@@ -30,6 +31,7 @@ DEFAULT_DUR = {
     "mark": 0.3, "unmark": 0.3, "underline": 0.4, "circle": 0.5, "cross": 0.4, "clear": 0.4, "set": 0.3,
 }
 WIDGET_DUR = 0.5
+LEVELS = {"display": 1.5, "title": 1.25, "body": 1.0, "caption": 0.75}  # scene-spec 的 level → 字号倍数
 CUE_LATE = 0.4
 SIZES = {"l": (854, 480, 15), "m": (1280, 720, 30), "h": (1920, 1080, 30)}
 
@@ -58,12 +60,32 @@ def probe_seconds(path: Path) -> float:
     return float(out)
 
 
+class FlyFrom(Animation):
+    """从另一个对象的位置飞到自己的位置并淡入。起点在动画开始时才取，编译期不改动目标的位置。"""
+
+    def __init__(self, node: Node, source_center, duration: float = 1.0):
+        super().__init__(node, duration)
+        self.source_center = source_center
+
+    def begin(self) -> None:
+        super().begin()
+        self.final = self.node.matrix.copy()
+        self.delta = np.asarray(self.source_center(), dtype=float) - self.node.center()
+
+    def interpolate(self, alpha: float) -> None:
+        d = self.delta * (1 - alpha)
+        self.node.matrix = T.translate(float(d[0]), float(d[1])) @ self.final
+        self.node.set_style(opacity=alpha)
+
+
 class MoxianCompiler:
     def __init__(self, doc: dict, theme: Theme, audio_dir: Path | None, log=print, quality: str = "l"):
         self.doc, self.t, self.audio_dir, self.log = doc, theme, audio_dir, log
         self.width, self.height, self.fps = SIZES[quality]
         self.data = doc.get("data", {})
         self.lifetimes = analysis.lifetimes(doc)
+        self.stack_scale: dict[str, float] = {}
+        self.pinned_floor: float | None = None
         self.root = Group(name="root")
         self.objects: dict[str, Built] = {}
         for obj_id, definition in doc.get("objects", {}).items():
@@ -79,6 +101,11 @@ class MoxianCompiler:
         self.ignore_pairs: set[frozenset[str]] = set()
         self.problems: list[str] = []
         self.stats = {"beats": 0, "actions": 0, "cue_late": 0}
+        pinned = [k for k, b in self.objects.items() if b.definition.get("pin") == "top"]
+        for k in pinned:
+            self.place(k)
+        if pinned:
+            self.pinned_floor = min(self.objects[k].node.bbox().y0 for k in pinned) - 0.3
 
     # ---------- 对象 ----------
 
@@ -92,11 +119,12 @@ class MoxianCompiler:
             return Built(w.node, definition, w, w.built.spans, w.built.parts, w.built.items)
         kind = definition["type"]
         role = definition.get("role")
+        level = LEVELS[definition.get("level", "body")]
         if kind == "text":
-            r = rich(definition["text"], t, size=36, color=t.ink(role))
+            r = rich(definition["text"], t, size=36 * level, color=t.ink(role))
             return Built(r.node, definition, spans=r.spans)
         if kind == "math":
-            return Built(math(definition["tex"], 40, t.ink(role)), definition)
+            return Built(mmath(r"\displaystyle " + definition["tex"], 40 * level, t.ink(role)), definition)
         raise NotImplementedError(f"kit（墨线）0.1 还不支持 type: {kind}（对象 {obj_id}）")
 
     # ---------- 坐标 ----------
@@ -113,6 +141,25 @@ class MoxianCompiler:
         if box is None:
             raise ValueError(f"节点 {node.name!r} 没有几何")
         return box
+
+    def world_scale(self, node: Node) -> float:
+        """节点在世界坐标里相对自身的缩放倍数（引用容器取第一个成员）。"""
+        members = self._members(node)
+        if not members:
+            return 1.0
+        m = parent_matrix_of(self.root, members[0]) @ members[0].matrix
+        return float(np.sqrt(abs(np.linalg.det(m[:2, :2]))))
+
+    def _in_tree(self, target: Node) -> bool:
+        try:
+            parent_matrix_of(self.root, target)
+            return True
+        except ValueError:
+            return False
+
+    def _members(self, node: Node) -> list[Node]:
+        """选择器解析出的节点：在树里就是它自己；是临时打包的引用容器就展开成树里的成员。"""
+        return [node] if self._in_tree(node) else [m for c in node.children for m in self._members(c)]
 
     def parent_of(self, target: Node) -> Node:
         def search(node: Node) -> Node | None:
@@ -138,16 +185,45 @@ class MoxianCompiler:
     def region_of(self, obj_id: str) -> str:
         return analysis.region_static(self.doc, obj_id) if self.objects[obj_id].definition.get("pin") != "top" else "top"
 
-    def stack_below(self, obj_id: str, depth: int = 0) -> float:
-        total = 0.0
+    def region(self, obj_id: str) -> Region:
+        """对象所在区域。顶上有钉住的对象时，主讲区和侧栏的上沿取它的实际下沿，而不是固定比例。"""
+        usage = analysis.usage_for(self.doc, self.lifetimes, obj_id)
+        r = layout.regions(*usage)[self.region_of(obj_id)]
+        if usage[0] and r.name in ("stage", "side") and self.pinned_floor is not None:
+            r = replace(r, y1=self.pinned_floor)
+        return r
+
+    def dependents(self, obj_id: str, depth: int = 0) -> list[tuple[str, float]]:
+        """挂在 obj_id 下面的对象（含叠在它上面的对象下面挂的），返回 (id, 间距)。"""
+        out: list[tuple[str, float]] = []
         if depth > 10:
-            return total
+            return out
         for other, built in self.objects.items():
             d = built.definition
             if "below" in d and selectors.parse(d["below"]).obj == obj_id:
-                region = layout.regions(*analysis.usage_for(self.doc, self.lifetimes, other))[self.region_of(other)]
-                layout.fit(built.node, region)
-                total += layout.GAPS[d.get("gap", "md")] + built.node.height + self.stack_below(other, depth + 1)
+                out.append((other, layout.GAPS[d.get("gap", "md")]))
+                out += self.dependents(other, depth + 1)
+        for other, built in self.objects.items():
+            if "over" in built.definition and selectors.parse(built.definition["over"]).obj == obj_id:
+                extra = self.dependents(other, depth + 1)
+                mine = {k for k, _ in out}
+                out += [(k, g) for k, g in extra if k not in mine]
+        return out
+
+    def stack_below(self, obj_id: str) -> float:
+        """挂在下面的对象的总高度（含间距），按各自区域先做宽度适配。
+
+        同一时刻只有一部分会出现（例如 tr_name 和 tr_d0 都挂在 tr_zero 下面，但不同时可见）；
+        这里保守地按全部累加，宁可排紧一点也不出框。只算和 obj_id 有共同可见 beat 的对象。
+        """
+        mine = self.lifetimes.get(obj_id) or set()
+        total = 0.0
+        for other, gap in self.dependents(obj_id):
+            if mine and not (self.lifetimes.get(other, set()) & mine):
+                continue
+            node = self.objects[other].node
+            layout.fit(node, self.region(other))
+            total += gap + node.height
         return total
 
     def place(self, obj_id: str) -> Node:
@@ -161,8 +237,28 @@ class MoxianCompiler:
                 refs[key] = self.wbox(self.resolve(d[key], place=True))
         for axis, sel in (d.get("align") or {}).items():
             refs[f"align.{axis}"] = self.wbox(self.resolve(sel, place=True))
-        usage = analysis.usage_for(self.doc, self.lifetimes, obj_id)
-        layout.place(built.node, d, refs, self.region_of(obj_id), self.stack_below(obj_id), usage)
+        region = self.region(obj_id)
+        if "over" in d:
+            # 盖在别的对象上（例如题卡里的填空）：跟着被盖住的对象的实际缩放走，字号才一致
+            built.node.scale(self.world_scale(self.resolve(d["over"])))
+        factor = self.stack_scale.get(obj_id, 1.0)
+        if factor < 1.0:
+            built.node.scale(factor)
+        below = 0.0
+        relative = any(k in d for k in ("below", "above", "left_of", "right_of", "over", "within", "pin", "at"))
+        if not relative:
+            below = self.stack_below(obj_id)
+            if below > 0:
+                layout.fit(built.node, region)
+                total = built.node.height + below
+                if total > region.height * 0.98:
+                    # 整叠放不下：所有成员按同一比例缩，不是只缩最上面一个
+                    f = region.height * 0.98 / total
+                    built.node.scale(f)
+                    below *= f
+                    for dep, _ in self.dependents(obj_id):
+                        self.stack_scale[dep] = min(self.stack_scale.get(dep, 1.0), f)
+        layout.place(built.node, d, refs, region, below)
         built.placed = True
         for key in ("over", "within"):
             if key in d:
@@ -263,14 +359,24 @@ class MoxianCompiler:
         if act == "show":
             sel = selectors.parse(action["target"])
             node = self.resolve(action["target"], place=True)
-            if sel.span is None and sel.part is None and sel.index is None:
-                self.visible[sel.obj] = node
             style = action.get("style", "fade")
             dur = 1.0 if style == "write" else DEFAULT_DUR["show"]
-            return [fade_in(node, dur, shift=(0.0, -0.1))], dur
+            if sel.span is None and sel.part is None and sel.index is None:
+                self.visible[sel.obj] = node
+                return [fade_in(node, dur, shift=(0.0, -0.1))], dur
+            # 只显示对象里的某几项：第一次先把对象亮出来、其余项藏起来，之后只淡入指定的项
+            built = self.objects[sel.obj]
+            if sel.obj not in self.visible:
+                built.node.set_style(opacity=1.0)
+                for item in built.items:
+                    item.set_style(opacity=0.0)
+                self.visible[sel.obj] = built.node
+            return [fade_in(n, dur, shift=(0.0, -0.1)) for n in self._members(node)], dur
         if act == "hide":
             sel = selectors.parse(action["target"])
             node = self.resolve(action["target"])
+            if sel.span is not None or sel.part is not None or sel.index is not None:
+                return [fade_out(n, DEFAULT_DUR["hide"]) for n in self._members(node)], DEFAULT_DUR["hide"]
             extras = self._drop_overlays(sel.obj)
             self.visible.pop(sel.obj, None)
             return [fade_out(node, DEFAULT_DUR["hide"])] + [fade_out(e, DEFAULT_DUR["hide"]) for e in extras], DEFAULT_DUR["hide"]
@@ -279,10 +385,8 @@ class MoxianCompiler:
             dst = self.resolve(action["to"], place=True)
             to_sel = selectors.parse(action["to"])
             self.visible[to_sel.obj] = dst
-            src_c, dst_c = self.wbox(src).center, dst.center()
-            dst.move_to(src_c)
             d = DEFAULT_DUR["transform"]
-            return [Shift(dst, dst_c - src_c, d), Fade(dst, 0.0, 1.0, d)], d
+            return [FlyFrom(dst, lambda: self.wbox(src).center, d)], d
         if act == "focus":
             return self._focus(action["target"]), DEFAULT_DUR["focus"]
         if act == "unfocus":
