@@ -356,6 +356,7 @@ REGISTRY: dict[str, type[Widget]] = {
     "think_box": ThinkBox,
     "summary": Summary,
     "diff_table": DiffTable,
+    "area_model": __import__("animind_kit.mx.area", fromlist=["AreaModel"]).AreaModel,  # 面积模型在 area.py（勾股定理拼图）
 }
 
 

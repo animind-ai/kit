@@ -316,14 +316,14 @@ class MoxianCompiler:
         tl = Timeline()
         for start, anim in tl_items:
             tl.add(start, anim)
-        until = bt.total + 0.5
-        if "pause" in beat:
-            until = max(until, beat["pause"].get("hold", 2) + 1.0)
-        audio = self.audio_dir / f"{beat['id']}.wav" if self.audio_dir else None
-        if audio is not None and audio.exists():
-            until = max(until, wav_seconds(audio) + 0.28)
-        else:
-            audio = None
+        narration = self.audio_dir / f"{beat['id']}.wav" if self.audio_dir else None
+        if narration is not None and not narration.exists():
+            narration = None
+        spoken = (wav_seconds(narration) + 0.28) if narration else (bt.total + 0.5 if beat.get("say") else 0.0)
+        # 暂停（预测、想一想）接在旁白之后：画面定住 hold 秒，音轨补同样长的静音
+        hold = float(beat["pause"].get("hold", 2)) if "pause" in beat else 0.0
+        until = max(spoken + hold, tl.end + 0.3, 1.0)
+        audio = self._padded_audio(narration, until, clip)
         self._camera_exempt()
         renderer = SkiaRenderer(self.width, self.height, background=self.t.BG, camera=self.camera)
         render_video(self.root, tl, clip, renderer, fps=self.fps, audio=audio, until=until, log=lambda *_: None)
@@ -354,6 +354,22 @@ class MoxianCompiler:
         for p in problems:
             self.problems.append(f"{beat_id}: {p}")
             self.log(f"LAYOUT {beat_id}: {p}")
+
+    @staticmethod
+    def _padded_audio(narration: Path | None, seconds: float, clip: Path) -> Path:
+        """每段都给一条和画面等长的音轨：有旁白就在后面补静音，没有就整段静音。
+
+        拼接各段时用的是 -c copy，所有片段必须有同样的音轨结构；没有音轨的片段会让后面音画错位。
+        """
+        out = clip.with_suffix(".audio.wav")
+        cmd = ["ffmpeg", "-y", "-v", "error"]
+        if narration is not None:
+            cmd += ["-i", str(narration), "-af", f"apad=whole_dur={seconds:.3f}"]
+        else:
+            cmd += ["-f", "lavfi", "-i", "anullsrc=r=22050:cl=mono"]
+        cmd += ["-t", f"{seconds:.3f}", "-ac", "1", "-ar", "22050", "-c:a", "pcm_s16le", str(out)]
+        subprocess.run(cmd, check=True)
+        return out
 
     def _next_at(self, actions: list, start: int, bt) -> float | None:
         for a in actions[start:]:
