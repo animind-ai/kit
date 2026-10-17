@@ -9,7 +9,7 @@ from scene_spec.loader import load_file
 from animind_kit import theme
 from animind_kit.backends.moxian_backend import MoxianCompiler
 from animind_kit.mx import layout, widgets
-from animind_kit.mx.text import inline, rich, segments
+from animind_kit.mx.text import Space, inline, rich, runs, segments
 
 EXAMPLE = Path(__file__).resolve().parents[2] / "scene-spec" / "examples" / "s67-p01.scene.yaml"
 T = theme.theme("paper")
@@ -27,6 +27,60 @@ def test_inline_keeps_spaces_and_shares_baseline():
     assert b.bbox().x0 - a.bbox().x1 > 0.04  # 空格没有丢
     assert abs(a.matrix[1, 2] - b.matrix[1, 2]) < 1e-9  # 同一基线
     assert row.width > a.width + b.width * 0.9
+
+
+def _row_width(body: str) -> float:
+    return inline(runs(body, 30, "#000")).width
+
+
+def test_space_between_formulas_is_a_word_space():
+    tight = _row_width(r"$d=0$$\Longrightarrow$")
+    spaced = _row_width(r"$d=0$ $\Longrightarrow$")
+    word = runs(" ", 30, "#000")[0]
+    assert isinstance(word, Space) and word.width > 0.08
+    assert abs(spaced - (tight - 0.06 + word.width)) < 1e-6  # 空格代替默认的公式间距
+    assert abs(_row_width(r"$d=0$   $\Longrightarrow$") - spaced) < 1e-6  # 连续空白算一个
+    assert abs(_row_width(r"$d=0$\ $\Longrightarrow$") - spaced) < 1e-6
+    assert abs(_row_width(r"$d=0$~$\Longrightarrow$") - spaced) < 1e-6
+
+
+def test_spacing_commands_between_runs_never_crash():
+    tight = _row_width(r"$d=0$$\Longrightarrow$")
+    word = runs(r"\ ", 30, "#000")[0].width
+    quad = _row_width(r"$d=0$\quad$\Longrightarrow$") - tight + 0.06
+    assert abs(quad - 3 * word) < 1e-6  # \quad 是 1em，词间空是 1/3em
+    assert abs(_row_width(r"$d=0$\qquad$\Longrightarrow$") - tight + 0.06 - 2 * quad) < 1e-6
+    assert abs(_row_width(r"$d=0$\ \ $\Longrightarrow$") - tight + 0.06 - 2 * word) < 1e-6
+    assert _row_width(r"$d=0$\,$\Longrightarrow$") < _row_width(r"$d=0$\;$\Longrightarrow$") < quad + tight
+    # 控制词后面的空格被吞掉，前面的算数（同 TeX 文本模式）
+    assert abs(_row_width(r"$d=0$ \quad $\Longrightarrow$") - tight + 0.06 - quad - word) < 1e-6
+
+
+def test_spacing_only_and_empty_segments():
+    assert runs("", 30, "#000") == [] and runs("$$", 30, "#000") == []
+    assert all(isinstance(n, Space) for n in runs(r" \quad ", 30, "#000"))
+    assert inline(runs(r"\quad", 30, "#000")).bbox() is None
+    nodes = runs(r"\quad x \underline{a b}\;", 30, "#000")  # 别的命令：只剥掉首尾间距
+    assert isinstance(nodes[0], Space) and isinstance(nodes[-1], Space) and len(nodes) == 3
+
+
+def test_plain_space_next_to_han_uses_cjk_gap():
+    assert abs(_row_width("就是 $x$") - _row_width("就是$x$")) < 1e-6  # 同 xeCJK：空格不额外加宽
+    assert _row_width(r"就是\quad 等比") > _row_width("就是等比") + 0.25  # 显式命令总是算数
+
+
+def test_space_at_span_boundary_between_texts_is_kept():
+    # 片段边界上的空格和段内的一样宽
+    joined = rich("例 1(1) 定义", T, size=30).node.width
+    split = rich("[例 1(1)]{#t} 定义", T, size=30).node.width
+    tight = rich("[例 1(1)]{#t}定义", T, size=30).node.width
+    assert abs(split - joined) < 1e-6 and split > tight + 0.05
+
+
+def test_rich_spans_skip_spaces():
+    r = rich(r"$d=0$\quad$\Longrightarrow$\quad[就是等比数列]{#q .B}", T, size=30)
+    assert isinstance(r.spans["q"], Text)
+    assert not any(isinstance(c, Space) for c in r.node.children)
 
 
 def test_rich_colors_spans_by_role():
