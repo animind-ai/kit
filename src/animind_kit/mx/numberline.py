@@ -22,6 +22,12 @@
 - bar：在轴下方画一条和 0..end 等长的分数条，每个单位分成 parts 格；fill：给 cells（"a:b"，从 0 数）涂 role 色；
   group：从左往右每 size 格框成一组，依次出现，框上标 1、2、3…
 
+从 0 出发的箭头（负负得正 #15 加的；参数 arrows: true 时在轴上方预留箭头转半圈扫过的半圆）：
+- arrow：画一支从 0 指到 to 的箭头（从 0 长出来），role 定颜色；keep 时上一支留一个淡影，否则收起；
+- stretch：现在这支箭头拉长或缩短到 to（方向不变），乘正数；
+- turn：现在这支箭头绕 0 转半圈（乘 −1），从轴的上方扫过，留下淡色半圆，label 写在半圆顶上；
+  再转一次时上一次的半圆和标注先收起。erase 也收起箭头和半圆。
+
 标注字号：整数刻度、分数刻度、点的标注和剩余段的分数都用 label_size，分数一律写成 \\dfrac（分子分母和整数一样大，
 不是缩小的上下标）。这些节点标了 font_floor = "label"；后端排版后按组件的实际缩放把 label_size 抬到字号下限
 （lint.FLOORS_720["label"]，成片 720p 约 36px），所以数轴被缩小时标注不跟着变小。
@@ -36,7 +42,8 @@
 - jump / count：跳跃弧和弧顶的计数，长度是 measures 里最多能跳的整跳数，按当前这次 jump 依次填；
 - rest：剩余段（虚画的整跳 + 剩下那一小段 + 它的分数），一项；
 - point：mark_point 点出来的点，最多 POINTS 个；
-- strip / groups：分数条（bar / fill）和它的分组框（group），各一项。
+- strip / groups：分数条（bar / fill）和它的分组框（group），各一项；
+- arrows / turns：箭头（现在这支和淡影）、转半圈的半圆和标注，各一项。
 """
 
 from __future__ import annotations
@@ -276,6 +283,59 @@ class _Retick(Animation):
             n.matrix = T.identity()
 
 
+class _Grow0(Animation):
+    """箭头从 0 长出来：以 about 为中心横向放大，透明度在播放时才改。"""
+
+    def __init__(self, node: Node, about: tuple[float, float], duration: float = 0.6):
+        super().__init__(node, duration, easing.smooth)
+        self.about = about
+
+    def begin(self) -> None:
+        super().begin()
+        self.node.set_style(opacity=1.0)
+
+    def interpolate(self, alpha: float) -> None:
+        self.node.matrix = T.scale(max(1e-3, alpha), 1.0, about=self.about)
+
+    def finish(self) -> None:
+        self.node.matrix = T.identity()
+
+
+class _ArrowLength(Animation):
+    """箭头的长度从 a 变到 b（拉长或缩短），每一帧按当前长度重画箭杆和箭头尖。"""
+
+    def __init__(self, line_: NumberLine, node: Group, a: Fraction, b: Fraction, duration: float = 0.8):
+        super().__init__(node, duration, easing.smooth)
+        self.line_, self.a, self.b = line_, a, b
+
+    def interpolate(self, alpha: float) -> None:
+        v = Fraction(self.a) + (Fraction(self.b) - Fraction(self.a)) * Fraction(alpha).limit_denominator(1000)
+        shaft, head = self.line_._arrow_paths(v)
+        self.node.children[0].path, self.node.children[1].path = shaft, head
+
+
+class _Turn(Animation):
+    """箭头绕 0 转 angle（半圈）；转完把几何换成指向 -value 的样子，矩阵复原。"""
+
+    def __init__(self, line_: NumberLine, node: Group, value: Fraction, angle: float, duration: float = 1.2):
+        super().__init__(node, duration, easing.smooth)
+        self.line_, self.value, self.angle = line_, value, angle
+
+    def begin(self) -> None:
+        super().begin()
+        shaft, head = self.line_._arrow_paths(self.value)  # 播放时才确定起点（前面的 stretch 已经播完）
+        self.node.children[0].path, self.node.children[1].path = shaft, head
+
+    def interpolate(self, alpha: float) -> None:
+        o = self.line_.x(Fraction(0))
+        self.node.matrix = T.rotate(self.angle * alpha, about=(o, 0.0))
+
+    def finish(self) -> None:
+        shaft, head = self.line_._arrow_paths(-self.value)
+        self.node.children[0].path, self.node.children[1].path = shaft, head
+        self.node.matrix = T.identity()
+
+
 # ---------- 组件 ----------
 
 class NumberLine(Widget):
@@ -286,6 +346,8 @@ class NumberLine(Widget):
     LABEL = 40  # 标注的默认字号（kit 字号，×1.4 是 1080p 像素）；opts["label_size"] 覆盖（后端按字号下限抬）
     COUNT = 32  # 跳跃弧顶的计数、分组框下的序号
     LABEL_GAP = 0.1  # 刻度下端到标注上沿
+    ARROW_W = 7  # 箭头的线宽（1080p 像素）
+    ARROW_HEAD = 0.26  # 箭头尖的长度
     ARC_BASE = 0.06
     ARC_MAX = 0.85
     BAR_GAP, BAR_H = 0.3, 0.5  # 分数条在标注下方多远、多高
@@ -327,6 +389,9 @@ class NumberLine(Widget):
                        style=Style(stroke=t.FG, stroke_width=3))
         # 看不见的占位框：跳跃弧和计数、分数标注都在里面，排版时整个组件的大小不随动作变化
         top = max(self.ARC_MAX + self.ARC_BASE + 0.1 + self.count_h, self.MAJOR + 0.08 + self.frac_h) + 0.1
+        if d.get("arrows"):  # 箭头绕 0 转半圈扫过的半圆，加上弧顶的标注
+            reach = max(abs(self.start), abs(self.end)) * U
+            top = max(top, reach + 0.25 + self._label("8", t.FG).height + 0.1)
         bottom = -self.label_bottom + 0.1
         if d.get("bars"):
             bottom += self.BAR_GAP + self.BAR_H + 0.1 + self.count_h
@@ -371,8 +436,14 @@ class NumberLine(Widget):
         self.rest_group = Group(name="rest")  # 虚画的整跳 + rest_piece
         self.rest_piece = Group(name="rest_piece")  # 剩下那一小段和它的分数（rest[0] 指向它）
         self.point_slots = [Group(name=f"point{i}") for i in range(POINTS)]
+        self.arrow_layer = Group(name="arrows")  # 从 0 出发的箭头（现在这支 + 留下的淡影）
+        self.turn_layer = Group(name="turns")  # 转半圈扫过的半圆和它的标注
+        self.arrow: Group | None = None
+        self.arrow_value: Fraction | None = None
+        self.arrow_role: str | None = None
         node.add(reserve, self.bar, axis, tip, *self.units, *self.major, *self.labels, self.frac_group,
-                 self.jump_layer, self.rest_group, *self.point_slots, self.strip, self.groups)
+                 self.jump_layer, self.rest_group, *self.point_slots, self.strip, self.groups,
+                 self.turn_layer, self.arrow_layer)
         self.root_group = node
 
         slots = max_jumps(self.start, self.end, self.measures)
@@ -388,6 +459,8 @@ class NumberLine(Widget):
             "point": list(self.point_slots),
             "strip": [self.strip],
             "groups": [self.groups],
+            "arrows": [self.arrow_layer],
+            "turns": [self.turn_layer],
         }
         return Built(node, parts=self.parts_map)
 
@@ -470,6 +543,12 @@ class NumberLine(Widget):
             return [self._group(int(args["size"]))]
         if act == "erase":
             return self._erase()
+        if act == "arrow":
+            return self._arrow(frac(args["to"]), args.get("role"), bool(args.get("keep", False)))
+        if act == "stretch":
+            return [self._stretch(frac(args["to"]))]
+        if act == "turn":
+            return self._turn(args.get("label"))
         raise KeyError(f"组件 {self.name} 没有动作 {act}")
 
     def _jump(self, length: Fraction, count: int | None, origin: Fraction | None = None, keep: bool = False,
@@ -610,15 +689,83 @@ class NumberLine(Widget):
     def _erase(self) -> list[Animation]:
         anims: list[Animation] = []
         for n in [self.jump_set, *self.kept_jumps, self.rest_group, self.bar, *self.bars_kept, *self.point_slots,
-                  self.strip, self.groups]:
+                  self.strip, self.groups, *self.arrow_layer.children, *self.turn_layer.children]:
             if n is not None and (n.style or Style()).opacity > 0:
                 anims.append(_FadeTo(n, 0.0))
         self.jump_set = None
         self.kept_jumps = []
         self.bars_kept = []
         self.points_used = 0
+        self.arrow, self.arrow_value = None, None
         self.jumps, self.left, self.length = [], Fraction(0), None
         return anims or [_FadeTo(self.bar, 0.0)]
+
+    # ---- 从 0 出发的箭头：拉长和转半圈 ----
+
+    def _arrow_paths(self, value: Fraction) -> tuple[Path, Path]:
+        """从 0 指到 value 的箭杆和箭头尖（画在轴上，转的时候绕 0 转）。"""
+        x0, x1 = self.x(Fraction(0)), self.x(value)
+        sign = 1.0 if x1 >= x0 else -1.0
+        h = self.ARROW_HEAD
+        shaft = line(x0, 0.0, x1 - sign * h * 0.6, 0.0)
+        head = Path().move_to(x1, 0.0).line_to(x1 - sign * h, 0.12).line_to(x1 - sign * h, -0.12).close()
+        return shaft, head
+
+    def _arrow_node(self, value: Fraction, color: str, opacity: float) -> Group:
+        shaft, head = self._arrow_paths(value)
+        g = Group(PathNode(path=shaft, style=Style(stroke=color, stroke_width=self.ARROW_W)),
+                  PathNode(path=head, style=Style(fill=color, stroke=color, stroke_width=2)), name="arrow")
+        g.set_style(opacity=opacity)
+        return g
+
+    def _arrow(self, value: Fraction, role: str | None, keep: bool) -> list[Animation]:
+        t = self.theme
+        anims: list[Animation] = []
+        if self.arrow is not None:
+            # 上一支：keep 时留一个淡影，否则收起
+            anims.append(_FadeTo(self.arrow, 0.3 if keep else 0.0))
+        for trace in self.turn_layer.children:
+            anims.append(_FadeTo(trace, 0.0))
+        self.arrow_role = role
+        self.arrow = self._arrow_node(value, t.color(role, t.A), 0.0)
+        self.arrow_layer.add(self.arrow)
+        self.arrow_value = value
+        anims.append(_Grow0(self.arrow, (self.x(Fraction(0)), 0.0)))
+        return anims
+
+    def _stretch(self, value: Fraction) -> Animation:
+        if self.arrow is None or self.arrow_value is None:
+            raise ValueError(f"{self.obj_id}：stretch 之前要先画一支 arrow")
+        old, self.arrow_value = self.arrow_value, value
+        return _ArrowLength(self, self.arrow, old, value)
+
+    def _turn(self, label: str | None) -> list[Animation]:
+        if self.arrow is None or self.arrow_value is None:
+            raise ValueError(f"{self.obj_id}：turn 之前要先画一支 arrow")
+        t = self.theme
+        v = self.arrow_value
+        o = self.x(Fraction(0))
+        r = abs(self.x(v) - o)
+        # 正数朝左上转过去（逆时针），负数朝右上转回来（顺时针）：箭头总是从轴的上方扫过
+        angle = math.pi if v > 0 else -math.pi
+        a0 = 0.0 if v > 0 else math.pi
+        pts = [(o + r * math.cos(a0 + angle * k / 48), r * math.sin(a0 + angle * k / 48)) for k in range(49)]
+        path = Path().move_to(*pts[0])
+        for p in pts[1:]:
+            path.line_to(*p)
+        trace = PathNode(path=path, style=Style(stroke=t.DIM, stroke_width=3, opacity=0.0))
+        # 上一次转身的半圈和标注先收起（两次转身扫的是同一个半圆，标注会叠在一起）
+        anims: list[Animation] = [_FadeTo(n, 0.0, 0.3) for n in self.turn_layer.children]
+        anims += [_Turn(self, self.arrow, v, angle), Draw(trace)]
+        self.turn_layer.add(trace)
+        if label:
+            lab = self._label(label, t.ink("HL"))  # 和刻度标注同一字号下限
+            lab.move_to([o, r + 0.15 + lab.height / 2])
+            lab.set_style(opacity=0.0)
+            self.turn_layer.add(lab)
+            anims.append(_Late(_FadeTo(lab, 1.0), 0.5))
+        self.arrow_value = -v
+        return anims
 
     # ---- 分数条（轴下方，和 start..end 等长）----
 

@@ -10,6 +10,7 @@
 - **组件**：题卡（可回填答案）、步骤胶囊、想一想框、总结卡、差分表（derive / extend / triangle）、对齐等式组 `equations`、数列格子 `seq_cells`（fill）。墨线版在 `mx/`；Manim 版 `widgets/` 只有前五个，所以只能渲染 p01 这样的内容。
 - **数轴** `mx/numberline.py`：跳跃（可从任意点起跳、几段接着走、换颜色、不标计数）、垫色（可几段并存）、带角色的点，
   以及轴下方和 0..end 等长的分数条（`bars: true` 预留位置；`bar` / `fill` / `group` 动作）；`unit` 调一个单位的长度。
+  从 0 出发的箭头（`arrows: true`）：`arrow` 画、`stretch` 拉长（乘正数）、`turn` 绕 0 转半圈（乘 −1），负负得正用。
   数字和分数标注一律用 `\dfrac`（分子分母不缩小），排版后按数轴的实际缩放把标注字号抬到下限（见下面的"字号下限"）。
 - **格子正方形** `mx/grid.py`（`area_grid`）：cols × rows 格，`cut` 画切线、`shade` 涂列或行、`overlap` 标出交叠格，分数乘法用。
   `rect: true` 时是小方格拼成的长方形：`split` 按段切开并标出各段长度、`apart` / `join` 分开拼回、`fill` 涂块并写格数、`unfill`，分配律和竖式乘法用。

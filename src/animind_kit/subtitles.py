@@ -272,11 +272,12 @@ def _clock(anchors: list[tuple[float, float]], pos: float) -> float:
 
 
 def en_pieces(text: str, n: int, limit: int = EN_MAX) -> list[str]:
-    """英文字幕切成几段：段数不超过中文条数 n，每段尽量不超过 limit 个字符，优先在标点后切，各段长度尽量均匀。"""
+    """英文字幕切成几段：段数尽量等于中文条数 n（词太少时少切），每段尽量不超过 limit 个字符，优先在标点后切，各段长度尽量均匀。"""
     words = text.split()
     if not words:
         return []
-    k = max(1, min(n, -(-len(text) // limit)))
+    # 中文切成几条，英文就尽量切成几段（每段至少三个词）：不然短句的整句英文会挂在每一条中文下面，导出的字幕里重复
+    k = max(1, min(n, max(-(-len(text) // limit), len(words) // 3)))
     while k <= len(words):
         target = len(text) / k
         pieces, cur = [], []

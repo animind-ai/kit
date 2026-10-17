@@ -71,7 +71,7 @@ def test_widget_registered_with_parts():
     assert widgets.lookup("number_line") is NumberLine
     m = NumberLine("line", DEF, T, {})
     sizes = {k: len(v) for k, v in m.built.parts.items()}
-    assert sizes == {"tick": 7, "label": 7, "unit": 6, "frac": 1, "span": 1, "jump": 9, "count": 9, "rest": 1, "point": 4, "strip": 1, "groups": 1}
+    assert sizes == {"tick": 7, "label": 7, "unit": 6, "frac": 1, "span": 1, "jump": 9, "count": 9, "rest": 1, "point": 4, "strip": 1, "groups": 1, "arrows": 1, "turns": 1}
     xs = [float(t.matrix[0, 2]) for t in m.built.parts["tick"]]
     assert xs == pytest.approx([k * m.UNIT for k in range(7)])
 
@@ -154,3 +154,61 @@ def test_keep_role_and_strip_actions():
     run(m.action("bar", {"parts": 6}))  # erase 之后再分组：框要重新看得见
     run(m.action("group", {"size": 3}))
     assert m.groups.style.opacity == 1 and m.groups.children[0].style.opacity == 1
+
+
+# ---------- 从 0 出发的箭头（#15 负负得正）----------
+
+ARROWS = {"widget": "number_line", "range": [-6, 6], "arrows": True}
+
+
+def tip(line: NumberLine) -> float:
+    """现在这支箭头尖的 x（箭头尖路径的最远点，按节点矩阵换算）。"""
+    b = line.arrow.children[1].path.bbox()
+    o = line.x(F(0))
+    return b[2] if abs(b[2] - o) > abs(b[0] - o) else b[0]
+
+
+def test_arrow_reserve_covers_the_half_turn():
+    plain = NumberLine("n", {**ARROWS, "arrows": False}, T, {})
+    turning = NumberLine("n", ARROWS, T, {})
+    assert turning.node.bbox().y1 >= 6 * turning.UNIT > plain.node.bbox().y1
+
+
+def test_turn_rotates_at_playback_and_lands_on_minus():
+    line = NumberLine("n", ARROWS, T, {})
+    grow = line.action("arrow", {"to": 3})
+    turn = line.action("turn", {"label": r"\times(-1)"})
+    assert line.arrow_value == -3
+    run(grow)
+    assert tip(line) == pytest.approx(line.x(F(3)))  # 建 turn 时还没转
+    rot = turn[0]
+    rot.begin()
+    rot.interpolate(0.5)  # 转到一半：箭头竖着朝上
+    b = line.arrow.bbox()
+    assert b.y1 > 3 * line.UNIT * 0.9 and abs((b.x0 + b.x1) / 2 - line.x(F(0))) < 0.3
+    for a in turn:
+        a.begin()
+        a.finish()
+    assert tip(line) == pytest.approx(line.x(F(-3)))
+    assert len(line.turn_layer.children) == 2  # 半圆 + 标注
+
+
+def test_stretch_then_two_turns_end_at_six():
+    line = NumberLine("n", ARROWS, T, {})
+    run(line.action("arrow", {"to": 3}) + line.action("stretch", {"to": 6}))
+    assert tip(line) == pytest.approx(line.x(F(6)))
+    run(line.action("turn", {}))
+    run(line.action("turn", {}))
+    assert line.arrow_value == 6 and tip(line) == pytest.approx(line.x(F(6)))
+    shown = [n for n in line.turn_layer.children if n.style.opacity > 0]
+    assert len(shown) == 1  # 只留最后一次转身的半圈
+
+
+def test_keep_leaves_a_faint_copy_and_erase_clears():
+    line = NumberLine("n", ARROWS, T, {})
+    run(line.action("arrow", {"to": 3}))
+    first = line.arrow
+    run(line.action("arrow", {"to": -3, "keep": True}))
+    assert first.style.opacity == pytest.approx(0.3) and line.arrow.style.opacity == 1.0
+    run(line._erase())
+    assert all(n.style.opacity == 0.0 for n in line.arrow_layer.children) and line.arrow is None

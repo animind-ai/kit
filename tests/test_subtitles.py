@@ -179,3 +179,11 @@ def test_default_burns_bilingual_subtitles_and_keeps_a_clean_copy(tmp_path):
     info = summary["subtitles"]
     assert info["mode"] == "burned" and info["bilingual"] and info["clean"] == "tiny.clean.mp4"
     assert "再看一遍\nOnce more." in (tmp_path / "tiny.srt").read_text(encoding="utf-8")
+
+
+def test_short_english_is_split_like_the_chinese_cues():
+    """中文切成两条时，短的英文句子也分成两段，导出的字幕里不重复整句（#15 结尾那句）。"""
+    from animind_kit.subtitles import en_pieces
+    assert en_pieces("Half a turn is times negative one. What would a quarter turn be?", 2) == [
+        "Half a turn is times negative one.", "What would a quarter turn be?"]
+    assert en_pieces("Yes, really.", 2) == ["Yes, really."]  # 词太少就不切
