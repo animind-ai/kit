@@ -8,7 +8,8 @@
 建模方式：每个三角形由"直角顶点 P、直角边 a 的方向 u"确定，直角边 b 的方向是 u 逆时针转 angle 度
 （angle=90 就是直角三角形）。两种摆法之间每个三角形只做平移（u 不变），所以全等、总面积不变都是
 构造上保证的；slide 时按"目标位置不和别的三角形重叠"的顺序一个一个挪。
-非例：bend 把 angle 改成钝角（例如 115），直角边 b 绕直角顶点转开，三角形戳出大正方形、互相压住。
+非例：bend 把 angle 改成钝角（例如 115），直角边 b 绕直角顶点转开，三角形戳出大正方形、互相压住；
+正方形外的 a、b 边长标注这时淡出（转回直角再淡入）。
 
 只给一个三角形（count: 1）时画一个单独的直角三角形，标出 a、b、c，用在开头的钩子里。
 
@@ -384,6 +385,9 @@ class AreaModel(Widget):
         for name in HOLES:  # 夹角一变，空白区域就不再是那几个正方形了
             if abs(angle - 90) > 1e-9:
                 anims.append(_FadeTo(self.holes[name], 0.0))
+        # 大正方形外的 a、b 标注：三角形转开后会戳出去压在上面，而且边长也对不上了，先淡出；转回直角再淡入
+        for lab in (self.la, self.lb, self.left_a, self.left_b):
+            anims.append(_FadeTo(lab, 1.0 if abs(angle - 90) < 1e-9 else 0.0))
         self.angle = angle
         return anims
 

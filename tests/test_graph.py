@@ -7,6 +7,7 @@ import pytest
 from scene_spec.expr import ExprError, evaluate, parse
 
 from animind_kit import theme
+from animind_kit.lint import crosses
 from animind_kit.mx import graph, widgets
 from animind_kit.mx.graph import Function, Graph
 
@@ -139,3 +140,28 @@ def test_tangent_at_corner_is_refused():
     d = {**BASE, "plots": [{"f": "abs(x)"}], "points": [{"x": 0}], "secants": [], "lines": []}
     with pytest.raises(ValueError, match="没有切线"):
         Graph("g", d, T, {})
+
+
+def test_labels_keep_clear_of_lines():
+    """名字避开所有线（曲线、割线、切线、直线、坐标轴）；被线穿过的刻度数字隐去，Q 滑动时也一样。"""
+    g = Graph("g", {**BASE, "secants": [{"point": 0, "h": 1, "label": "Q"}, {"point": 0, "h": -1, "label": "Q'"}]}, T, {})
+    a, b = g._lines()
+
+    def check() -> None:
+        for m in g.marker_labels:
+            assert not crosses(a, b, g._box(m["label"], m["group"].matrix))
+        for grp, lab, _ in g.plot_labels:
+            assert not crosses(a, b, g._box(lab, grp.matrix))
+        for slot, lab in g.tick_slots:
+            if lab in slot.children:
+                assert not crosses(a, b, g._box(lab, slot.matrix))
+
+    check()
+    one = [lab for slot, lab in g.tick_slots if np.isclose(slot.matrix[0, 2], g.u) and np.isclose(slot.matrix[1, 2], 0)]
+    assert one and all(lab not in slot.children for slot, lab in g.tick_slots if lab is one[0])  # 竖线 x=1 穿过「1」
+    anim = g.action("approach", {"secant": 0, "h": 0.05})[0]
+    anim.begin()
+    for alpha in (0.3, 0.7):
+        anim.interpolate(alpha)
+        a, b = g._lines()
+        check()
