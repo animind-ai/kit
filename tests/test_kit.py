@@ -82,3 +82,13 @@ def test_regress_compare_detects_change(tmp_path):
     assert compare(a, b) == (0.0, 0.0)
     mean, fraction = compare(a, c)
     assert mean > 200 and fraction == 1.0
+
+
+def test_theme_from_json_file(tmp_path):
+    from animind_kit.theme import theme
+
+    custom = tmp_path / "house.json"
+    custom.write_text('{"house": {"BG": "#FFFFFF", "FG": "#111111", "C_A": "#00AA00", "C_B": "#AA0000", '
+                      '"C_C": "#0000AA", "C_HL": "#FFCC00", "C_NO": "#CC0000", "C_DIM": "#999999"}}')
+    t = theme(str(custom))
+    assert (t.name, t.A, t.is_light) == ("house", "#00AA00", True)

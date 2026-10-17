@@ -139,7 +139,7 @@ def beat_info_estimated(doc: dict, audio_dir: Path | None) -> dict:
 
 
 def render(spec: Path, out: Path, audio_dir: Path | None, quality: str = "l", only: list[str] | None = None, log=print,
-           backend: str = "manim", burn_subtitles: bool = False) -> dict:
+           backend: str = "manim", burn_subtitles: bool = False, theme_name: str | None = None) -> dict:
     doc = load_file(spec)
     report = check(doc)
     for issue in report.issues:
@@ -148,7 +148,7 @@ def render(spec: Path, out: Path, audio_dir: Path | None, quality: str = "l", on
         raise SystemExit("scene-spec 检查未通过，不渲染")
 
     build = out.parent / f".build-{spec.stem}-{backend}"
-    theme = load_theme(doc.get("style", {}).get("theme", "paper"))
+    theme = load_theme(theme_name or doc.get("style", {}).get("theme", "paper"))
 
     if backend == "moxian":
         from .backends.moxian_backend import MoxianCompiler

@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from importlib import resources
+from pathlib import Path
 
 ROLES = ("FG", "A", "B", "C", "HL", "NO", "DIM")
 
@@ -71,7 +72,12 @@ def _load_palettes() -> dict:
 
 
 def theme(name: str = "paper") -> Theme:
-    palettes = _load_palettes()
+    """name 是 palette 里的主题名，或一个 .json 文件（格式同 palette.json，取其中第一个主题）。"""
+    if name.endswith(".json"):
+        palettes = json.loads(Path(name).expanduser().read_text(encoding="utf-8"))
+        name = next(iter(palettes))
+    else:
+        palettes = _load_palettes()
     if name not in palettes:
         raise KeyError(f"palette 里没有主题 {name!r}（有 {', '.join(palettes)}）")
     p = palettes[name]
