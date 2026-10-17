@@ -207,7 +207,11 @@ def _hermite(f: Function, a: float, b: float) -> Segment | None:
     if not all(math.isfinite(v) for v in (ya, yb, da, db)):
         return None
     h = b - a
-    return (a, ya, a + h / 3, ya + da * h / 3, b - h / 3, yb - db * h / 3, b, yb)
+    # 端点处切线接近竖直（如 √x 在 0）时导数极大：控制柄沿切线方向截短到不超过这一段的跨度，不然会飞出画面
+    cap = max(abs(yb - ya), h)
+    ka = min(1.0, cap / abs(da * h / 3)) if da else 1.0
+    kb = min(1.0, cap / abs(db * h / 3)) if db else 1.0
+    return (a, ya, a + ka * h / 3, ya + ka * da * h / 3, b - kb * h / 3, yb - kb * db * h / 3, b, yb)
 
 
 def _bez_y(seg: Segment, t: float) -> float:

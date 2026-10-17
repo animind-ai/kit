@@ -80,6 +80,19 @@ def test_other_functions_within_tolerance(text):
             assert abs(y - f(x)) < 5 * graph.TOL
 
 
+@pytest.mark.parametrize("text", ["sqrt(x)", "sqrt(x+2)", "sqrt(x)+2"])
+def test_vertical_tangent_at_domain_end_stays_in_box(text):
+    """√x 在定义域端点切线竖直：控制柄不能沿着巨大的导数飞出去（包围盒会撑到上万倍，整张图被缩没）。"""
+    runs = graph.curve_segments(Function(text), -3, 8, -0.6, 4.6)
+    assert len(runs) == 1
+    for seg in runs[0]:
+        ys = seg[1::2]
+        assert all(-0.7 <= y <= 4.7 for y in ys), seg
+        for t in np.linspace(0, 1, 17):
+            x, y = _bez(seg, t)
+            assert abs(y - Function(text)(x)) < 0.02
+
+
 def test_corner_is_a_breakpoint():
     """y=|x| 在 0 处不能被一段光滑曲线跨过去，否则放大后尖角会被抹圆。"""
     segs = graph.curve_segments(Function("abs(x)"), -1.3, 1.7, -1, 3, [0.0])[0]
