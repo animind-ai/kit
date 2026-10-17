@@ -90,7 +90,7 @@ DOC = {
     },
     "beats": [{"id": "B", "do": [
         {"at": 0, "act": "show", "target": "big"},
-        {"after": "prev", "act": "tween", "args": {"k": 30}, "dur": 1},
+        {"after": "prev", "act": "tween", "args": {"k": 100}, "dur": 1},
         {"after": "prev", "act": "tween", "args": {"k": 0}, "dur": 1, "ease": "linear"},
     ]}],
 }
@@ -104,11 +104,14 @@ def test_tween_action_compiles_to_param_tweens():
 
 
 def test_layout_checked_while_params_move(tmp_path):
-    """读数在补间中途变得很宽、出了画面，结束时又缩回去：结束帧没问题，中途的问题也要报出来。"""
+    """读数在补间中途变得很宽、出了画面，结束时又缩回去：结束帧没问题，中途的问题也要报出来。
+
+    补间到 100，最先越界的采样点是中点 k=50（51 位数），远超边距，不受各平台字形宽度差异影响。
+    """
     c = MoxianCompiler(DOC, T, None, log=lambda *_: None, quality="l")
     c.render_beat(DOC["beats"][0], tmp_path / "B.mp4")
     assert c.params["k"].value == 0.0
-    assert len(c.problems) == 1 and "超出安全边距" in c.problems[0] and "k=30" in c.problems[0]
+    assert len(c.problems) == 1 and "超出安全边距" in c.problems[0] and "k=50" in c.problems[0]
 
 
 def test_layout_sampling_restores_params():
