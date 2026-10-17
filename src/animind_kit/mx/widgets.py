@@ -395,6 +395,7 @@ REGISTRY: dict[str, type[Widget]] = {
     "dot_array": __import__("animind_kit.mx.dots", fromlist=["DotArray"]).DotArray,  # 点阵在 dots.py（转 90°、补满、淡出一列）
     "block_bars": __import__("animind_kit.mx.bars", fromlist=["BlockBars"]).BlockBars,  # 积木条形图在 bars.py（平均数削峰填谷）
     "balance": __import__("animind_kit.mx.balance", fromlist=["Balance"]).Balance,  # 天平在 balance.py（解方程两边同时拿走）
+    "plane": __import__("animind_kit.mx.plane", fromlist=["Plane"]).Plane,  # 坐标平面在 plane.py（向量、乘 i 转 90°、矩阵变形）
 }
 
 
