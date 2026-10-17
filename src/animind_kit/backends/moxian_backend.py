@@ -38,9 +38,10 @@ from moxian.path import Path as VPath
 from moxian.path import line, rounded_rect
 from moxian.render import SkiaRenderer
 from scene_spec import params as spec_params
+from scene_spec import segments as spec_segments
 from scene_spec import selectors
 
-from .. import analysis, timing
+from .. import analysis, segments, timing
 from ..mx import layout, widgets
 from ..mx.readout import Readout
 from ..mx.text import mmath, rich
@@ -50,7 +51,7 @@ from ..theme import Theme
 DEFAULT_DUR = {
     "show": 0.6, "hide": 0.4, "transform": 1.0, "move": 0.8, "focus": 0.4, "unfocus": 0.4,
     "mark": 0.3, "unmark": 0.3, "underline": 0.4, "circle": 0.5, "cross": 0.4, "clear": 0.4, "set": 0.3,
-    "camera": 1.5, "tween": spec_params.DEFAULT_TWEEN,
+    "camera": 1.5, "tween": spec_params.DEFAULT_TWEEN, "ghost": 0.5, "unghost": 0.4,
 }
 CAMERA_ZOOM = 2.0  # camera 只给 target 时的默认放大倍数
 CAMERA_MARGIN = 0.5  # fit 时四周留白（画面单位）
@@ -170,6 +171,9 @@ class MoxianCompiler:
         self.ignore_pairs: set[frozenset[str]] = set()
         self.problems: list[str] = []
         self.stats = {"beats": 0, "actions": 0, "cue_late": 0}
+        self.seg = segments.SegmentState()  # 残影、常驻（跨 beat）
+        self.freezes: list[segments.Freeze] = []  # 当前 beat 的子步定格
+        self.beat_info: dict[str, dict] = {}  # 每个 beat 的句子时刻、子步定格（成片时刻，相对段首），给字幕和章节用
         pinned = [k for k, b in self.objects.items() if b.definition.get("pin") == "top"]
         for k in pinned:
             self.place(k)
@@ -408,6 +412,9 @@ class MoxianCompiler:
             before = set(self.visible)
             for action in batch:
                 self.stats["actions"] += 1
+                if action["act"] == "step":
+                    ref = str(action.get("at", "after" if "after" in action else "with"))
+                    self.freezes.append(segments.Freeze(start, spec_segments.step_hold(self.doc, action), ref))
                 a, d = self.animations(action)
                 if action.get("dur") == "fit":
                     d = max(0.3, (next_at - start) if next_at is not None else d) - 0.1
@@ -420,19 +427,31 @@ class MoxianCompiler:
             self._solve_layout(beat["id"], set(self.visible) - before)
             snapshots.append((start, dict(self.visible)))
             # 叠加层先 begin：量目标几何时，同一批的书写、变形还没改动路径
-            anims.sort(key=lambda a: not isinstance(a, _Overlay))
+            # 残影也先 begin：快照要拍在同一批的 erase、变形改动画面之前
+            anims.sort(key=lambda a: not isinstance(a, (_Overlay, segments.GhostIn)))
             if anims:
                 tl_items.append((start, together(*anims)))
             prev_end = start + run_time
             i = j
 
-        tl = _FollowTimeline(follow=self._follow)
+        inner = _FollowTimeline(follow=self._follow)
         for start, anim in tl_items:
-            tl.add(start, anim)
+            inner.add(start, anim)
+        freezes, self.freezes = self.freezes, []
+        tl = segments.Warped(inner, freezes)
         narration = self.audio_dir / f"{beat['id']}.wav" if self.audio_dir else None
         if narration is not None and not narration.exists():
             narration = None
-        spoken = (wav_seconds(narration) + 0.28) if narration else (bt.total + 0.5 if beat.get("say") else 0.0)
+        if narration is not None and tl.freezes:  # 定格处给旁白插入等长静音
+            narration = segments.insert_silence(narration, clip.with_suffix(".narration.wav"), tl.freezes)
+        frozen = sum(f.hold for f in tl.freezes)
+        spoken = (wav_seconds(narration) + 0.28) if narration else (bt.total + frozen + 0.5 if beat.get("say") else 0.0)
+        self.beat_info[beat["id"]] = {
+            "cues": [{"start": segments.to_video(s.start, tl.freezes), "end": segments.to_video(s.end, tl.freezes),
+                      "marks": {k: segments.to_video(v, tl.freezes) for k, v in s.marks.items()}} for s in bt.sentences],
+            "steps": [{"time": round(t, 3), "hold": f.hold, "at": f.ref}
+                      for f, t in zip(sorted(freezes, key=lambda f: f.at), segments.freeze_starts(freezes))],
+        }
         # 暂停（预测、想一想）接在旁白之后：画面定住 hold 秒，音轨补同样长的静音
         hold = float(beat["pause"].get("hold", 2)) if "pause" in beat else 0.0
         until = max(spoken + hold, tl.end + 0.3, 1.0)
@@ -441,10 +460,10 @@ class MoxianCompiler:
         renderer = SkiaRenderer(self.width, self.height, background=self.t.BG, camera=self.camera)
         render_video(self.root, tl, clip, renderer, fps=self.fps, audio=audio, until=until, log=lambda *_: None)
         self.stats["beats"] += 1
-        pinned = {k for k, v in self.objects.items() if v.definition.get("pin")}
+        pinned = {k for k, v in self.objects.items() if v.definition.get("pin")} | self.seg.pinned
         found = layout.check(self.visible, self.ignore_pairs, pinned)
-        if tl.schedules:
-            found += self._param_layout(tl, snapshots, pinned, {p.split("（")[0] for p in found})
+        if inner.schedules:  # 参数采样按逻辑时刻，用定格之前的时间线
+            found += self._param_layout(inner, snapshots, pinned, {p.split("（")[0] for p in found})
         for problem in found:
             self.problems.append(f"{beat['id']}: {problem}")
             self.log(f"LAYOUT {beat['id']}: {problem}")
@@ -487,7 +506,7 @@ class MoxianCompiler:
         if not new:
             return
         visible = [k for k in self.visible if k in self.objects]
-        pinned = {k for k, v in self.objects.items() if v.definition.get("pin")}
+        pinned = {k for k, v in self.objects.items() if v.definition.get("pin")} | self.seg.pinned
         problems = layout.resolve(
             {k: self.objects[k].node for k in visible},
             {k: self.objects[k].definition for k in visible},
@@ -553,8 +572,8 @@ class MoxianCompiler:
                 return [fade_out(n, DEFAULT_DUR["hide"]) for n in self._members(node)], DEFAULT_DUR["hide"]
             extras = self._drop_overlays(sel.obj)
             self.visible.pop(sel.obj, None)
-            return ([fade_out(node, DEFAULT_DUR["hide"])] + [self._overlay_out(e, DEFAULT_DUR["hide"]) for e in extras],
-                    DEFAULT_DUR["hide"])
+            return ([fade_out(node, DEFAULT_DUR["hide"])] + [self._overlay_out(e, DEFAULT_DUR["hide"]) for e in extras]
+                    + self._unghost(sel.obj), DEFAULT_DUR["hide"])
         if act == "transform":
             src = self.resolve(action["from"])
             dst = self.resolve(action["to"], place=True)
@@ -602,9 +621,37 @@ class MoxianCompiler:
             d = DEFAULT_DUR["tween"]
             ease = easing.by_name(action.get("ease", "smooth"))
             return [ParamTween(self.params[k], float(v), d, ease) for k, v in args.items()], d
+        if act in ("ghost", "unghost", "step", "pin"):
+            return self._segment(act, action, args)
         sel = selectors.parse(action["target"])
         built = self.objects[sel.obj]
         return built.widget.action(act, args), WIDGET_DUR
+
+    # ---------- 分段：残影、子步、常驻 ----------
+
+    def _segment(self, act: str, action: dict, args: dict) -> tuple[list[Animation], float]:
+        if act == "step":  # 定格在 render_beat 里登记，这里不产生动画
+            return [], 0.0
+        obj = selectors.parse(action["target"]).obj
+        if act == "ghost":
+            name, holder, anim = self.seg.ghost(obj, self.objects[obj].node, self.root, self.t, args)
+            self.visible[name] = holder
+            if args.get("place", "stay") == "stay":
+                self.ignore_pairs.add(frozenset((obj, name)))
+            return [anim], DEFAULT_DUR["ghost"]
+        if act == "unghost":
+            return self._unghost(obj), DEFAULT_DUR["unghost"]
+        # pin：之后的布局求解把它当固定占位；它此刻已有的划线、圈、标记跟着常驻
+        self.seg.pinned.add(obj)
+        self.seg.protected |= {id(d) for _a, s, d in self.decorations if selectors.parse(s).obj == obj}
+        self.seg.protected |= {id(p) for s, p in self.marks.items() if selectors.parse(s).obj == obj}
+        return [], 0.0
+
+    def _unghost(self, obj_id: str) -> list[Animation]:
+        names, anims = self.seg.drop(obj_id, DEFAULT_DUR["unghost"])
+        for name in names:
+            self.visible.pop(name, None)
+        return anims
 
     # ---------- 镜头 ----------
 
@@ -730,11 +777,13 @@ class MoxianCompiler:
                 extras.append(frame)
             for s in self.dimmed.pop(obj_id, []):
                 s.set_style(opacity=1.0)
-        for sel in [s for s in self.marks if selectors.parse(s).obj == obj_id]:
+        protected = self.seg.protected if keep_focus else set()  # clear 不收常驻对象 pin 之前就有的装饰
+        for sel in [s for s in self.marks if selectors.parse(s).obj == obj_id and id(self.marks[s]) not in protected]:
             extras.append(self.marks.pop(sel))
         keep = []
         for act, sel, deco in self.decorations:
-            (extras.append(deco) if selectors.parse(sel).obj == obj_id else keep.append((act, sel, deco)))
+            mine = selectors.parse(sel).obj == obj_id and id(deco) not in protected
+            (extras.append(deco) if mine else keep.append((act, sel, deco)))
         self.decorations = keep
         return extras
 
@@ -755,5 +804,5 @@ class MoxianCompiler:
         out.parent.mkdir(parents=True, exist_ok=True)
         subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", str(playlist), "-c", "copy", str(out)], check=True)
         return {"out": str(out), "seconds": round(probe_seconds(out), 1), "beats": [b["id"] for b in self.doc["beats"]],
-                "clip_seconds": [probe_seconds(c) for c in clips],
+                "clip_seconds": [probe_seconds(c) for c in clips], "beat_info": self.beat_info,
                 "layout_problems": self.problems, "stats": self.stats}

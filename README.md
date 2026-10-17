@@ -13,6 +13,8 @@
 - **渲染** `render.py`：逐 beat 渲染，和旁白合成，拼成一支成片。
 - 两个后端共用的部分：`analysis.py`（可见期静态分析、区域占用）、`regions.py`（画面分区、出框和重叠检查）、`timing.py`、`theme.py`。
 
+分段播放（`step` 子步定格、`ghost` 残影、`pin` 常驻，见 scene-spec 设计稿 §7.6）、字幕导出的定格顺延只有墨线后端实现；Manim 后端只导出字幕和章节。
+
 还没有：自动布局求解（现在只按约束摆放 + 检查）、三维、camera 动作、area_model 等洞察系列的原语、Whisper 词级时间戳（书签时刻按字符位置估算）。
 
 ## 用法
@@ -44,6 +46,43 @@ uv run animind-kit regress --update   # 确认画面变化是有意的之后，�
 ```
 
 `--audio` 目录里要有每个 beat 的 `<beat>.wav` 和 `<beat>.timing.json`（voice 流水线的输出格式；没有音频的 beat 按每个汉字 0.22 秒估算时长）。`--quality` 取 `l` / `m` / `h`。
+
+### 分段播放、字幕和章节文件
+
+`x.mp4` 渲染完，旁边还有（墨线后端）：
+
+- `x.chapters.json`：播放器用的章节表；
+- `x.vtt`、`x.srt`：软字幕（`style.subtitles: soft`，默认），同一份字幕也以 mov_text 轨道封装进 `x.mp4`（标为默认轨，播放器里可关；画面里没有字）；`subtitles: none` 时都不出；
+- `x.burned.mp4`：只有加了 `--burn-subtitles` 才出，给不支持软字幕的平台。画面整体缩到 90%，底部让出一条字幕带，字幕画在带里，不压住 footer 的公式。
+
+字幕文字是 `say` 的原文（不是 TTS 的读法）：去掉书签 `{@x}`，`$...$` 公式转成 Unicode（`a_n`→aₙ、`x^2`→x²、`\frac{2}{3}`→⅔、`\frac{a+b}{2}`→(a+b)/2、`\sqrt{x}`→√x），不留 LaTeX 命令。每句的起止取 `timing.json` 的 cues，加上这一段在成片里的起点（子步定格顺延）；长句按标点切成每条不超过 18 个字宽（汉字 1，西文和数字 0.5），句内时刻按 Whisper 对齐的书签插值。
+
+`chapters.json`：
+
+```json
+{
+  "id": "ep09", "title": "…", "video": "x.mp4", "duration": 126.3, "segmented": true,
+  "subtitles": {"vtt": "x.vtt", "srt": "x.srt", "embedded": "mov_text", "cues": 25},
+  "chapters": [
+    {"id": "Hook", "title": "Hook", "start": 0.0, "end": 14.42, "shows": ["misconception"],
+     "pause": {"type": "predict", "prompt": "…", "time": 13.92, "hold": 0.5, "app_item": "ep09-predict-1"},
+     "segment_end": true, "steps": []},
+    {"id": "Count", "start": 27.27, "end": 46.75, "segment_end": true,
+     "steps": [{"time": 37.38, "hold": 1.0, "resume": 38.38, "at": "s2"}], "…": "…"}
+  ],
+  "stops": [
+    {"time": 13.92, "kind": "predict", "beat": "Hook", "hold": 0.5, "resume": 14.42, "prompt": "…", "app_item": "ep09-predict-1"},
+    {"time": 14.42, "kind": "segment_end", "beat": "Hook"},
+    {"time": 37.38, "kind": "step", "beat": "Count", "hold": 1.0, "resume": 38.38}
+  ]
+}
+```
+
+- 时间都是成片里的秒数。`chapters[].start/end` 是 beat 的起止，按各段实际时长累加。
+- `pause`：预测 / 想一想 / 分段暂停。`time` 是段尾画面定住的那 `hold` 秒的开始，播放器在这里暂停；`app_item` 是 App 里对应题目的 id。
+- `steps`：子步定格（`step` 动作）。分段时视频里已经在 `time`..`resume` 定住；连续播放（复看）时播放器可以跳过这一段。不分段时 `hold` 为 0，只标出位置。`at` 是场景文件里写的时间点。
+- `segment_end`：这一段末尾是分段点（`style.segmented: true` 时每段都是，或这一段 `pause.type: segment`）。
+- `stops`：上面三类停顿按时间排好的一张表，`kind` 取 `step` / `predict` / `think` / `segment` / `segment_end`。
 
 渲染结束会打印版式问题的条数；中间产物在 `--out` 旁边的 `.build-<名字>/` 里，每个 beat 一段 mp4，便于抽帧检查。
 

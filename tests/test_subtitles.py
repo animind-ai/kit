@@ -1,0 +1,139 @@
+"""软字幕：显示文本、公式转 Unicode、切条、时刻、文件格式、封装进 mp4。"""
+
+import json
+import shutil
+import subprocess
+
+import pytest
+
+from animind_kit import subtitles as sub
+from animind_kit.render import render
+
+
+@pytest.mark.parametrize("tex, text", [
+    (r"6\div\frac{2}{3}", "6÷⅔"),
+    (r"6\times\frac{3}{2}=9", "6×3/2=9"),
+    (r"7\frac{2}{5}", "7⅖"),
+    (r"7\frac{2}{15}", "7 2/15"),
+    (r"A_{n+1}-A_n", "Aₙ₊₁-Aₙ"),
+    (r"b_n=A_{n+1}-A_n", "bₙ=Aₙ₊₁-Aₙ"),
+    (r"x^2+y^{10}", "x²+y¹⁰"),
+    (r"a^{2}+b^2=c^2", "a²+b²=c²"),
+    (r"\sqrt{2}", "√2"),
+    (r"\sqrt{a+b}", "√(a+b)"),
+    (r"\sqrt[3]{x}", "∛x"),
+    (r"\frac{a+b}{2}", "(a+b)/2"),
+    (r"\{A_n\}", "{Aₙ}"),
+    (r"2,5,11,\cdots", "2,5,11,⋯"),
+    (r"\angle ABC=90^\circ", "∠ABC=90°"),
+    (r"x\in\mathbb{R}", "x∈ℝ"),
+    (r"\text{面积}=\left(a+b\right)^2", "面积=(a+b)²"),
+    (r"f'(x)\le 0", "f'(x)≤0"),
+    (r"x_{\max}", "xₘₐₓ"),
+    (r"\sin x+\log_2 8", "sin x+log₂8"),
+    (r"\overbrace{a+b}", "a+b"),  # 不认识的命令：丢掉命令名，参数照常输出
+    (r"6\div\frac{3}{4}=\ ?", "6÷¾= ?"),
+])
+def test_tex_to_unicode(tex, text):
+    assert sub.tex_to_unicode(tex) == text
+
+
+def test_display_text_strips_bookmarks_and_converts_math():
+    assert sub.display_text("{@q}六除以三分之二，{@m}比六大？") == "六除以三分之二，比六大？"
+    assert sub.display_text("所以 {@k}$a^2+b^2=c^2$。") == "所以 a²+b²=c²。"
+
+
+def test_chunks_respect_the_limit_and_punctuation():
+    text = "先往下做差。按定义，后一项减前一项：五减二，得三，再看下一项，十一减五得六。"
+    pieces = [text[a:b] for a, b in sub.chunks(text)]
+    assert "".join(pieces) == text
+    assert all(sub.units(p.rstrip("，。；：、")) <= sub.MAX_UNITS for p in pieces)
+    assert pieces[0].endswith("。") or pieces[0].endswith("：")
+
+
+def test_long_clause_without_punctuation_is_hard_split():
+    text = "一二三四五六七八九十" * 4
+    pieces = [text[a:b] for a, b in sub.chunks(text)]
+    assert "".join(pieces) == text and all(sub.units(p) <= sub.MAX_UNITS for p in pieces)
+
+
+def test_sentence_cues_follow_bookmarks():
+    text = "很多人觉得，{@m}除法让数变小。还有人觉得，{@n}乘法一定让数变大，这两种想法都不对。"
+    cues = sub.sentence_cues(text, 1.0, 9.0, {"m": 2.0, "n": 6.5})
+    assert cues[0].start == 1.0 and cues[-1].end == pytest.approx(9.0)
+    assert all(c.text[-1] not in "，。" for c in cues)
+    second = next(c for c in cues if c.text.startswith("乘法") or "乘法" in c.text)
+    assert second.start >= 5.5  # 书签 n 在 6.5 秒，后半句不会提早出现
+    assert all(a.end <= b.start + 1e-6 for a, b in zip(cues, cues[1:]))
+
+
+def test_files_format():
+    cues = [sub.Cue(0.3, 2.0, "六除以三分之二"), sub.Cue(3661.5, 3662.25, "九个！")]
+    vtt, srt = sub.to_vtt(cues), sub.to_srt(cues)
+    assert vtt.startswith("WEBVTT\n\n1\n00:00:00.300 --> 00:00:02.000\n六除以三分之二\n")
+    assert "01:01:01.500 --> 01:01:02.250" in vtt
+    assert srt.startswith("1\n00:00:00,300 --> 00:00:02,000\n六除以三分之二\n\n2\n01:01:01,500")
+
+
+def test_build_offsets_each_beat():
+    doc = {"beats": [{"id": "A", "say": [{"text": "第一句。"}]}, {"id": "B", "say": [{"text": "第二句。"}]}]}
+    info = {"A": {"cues": [{"start": 0.3, "end": 1.0, "marks": {}}]}, "B": {"cues": [{"start": 0.3, "end": 1.2, "marks": {}}]}}
+    cues = sub.build(doc, [0.0, 5.0], info)
+    assert [(c.start, c.end, c.text) for c in cues] == [(0.3, 1.0, "第一句"), (5.3, 6.2, "第二句")]
+
+
+TINY = """\
+spec: "0.1"
+meta: {id: tiny, title: 小样, line: worked, author: t, license: CC-BY-4.0}
+pedagogy: {insight: 小样, status: method}
+style: {theme: paper, segmented: true, step_hold: 1.5, subtitles: SUBS}
+objects:
+  eq: {type: math, tex: 'a+b', in: stage}
+beats:
+  - id: One
+    say:
+      - {id: s1, pace: normal, text: "看这里，{@a}$a+b$。"}
+      - {id: s2, pace: normal, text: "再看一遍。"}
+    do:
+      - {at: s1@a, act: show, target: eq}
+      - {at: s2, act: step}
+"""
+
+
+def _streams(path) -> list[str]:
+    out = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=codec_type,codec_name", "-of", "json", str(path)],
+                         check=True, capture_output=True, text=True).stdout
+    return [f"{s['codec_type']}:{s['codec_name']}" for s in json.loads(out)["streams"]]
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="需要 ffmpeg")
+def test_render_exports_soft_subtitles(tmp_path):
+    spec = tmp_path / "tiny.scene.yaml"
+    spec.write_text(TINY.replace("SUBS", "soft"), encoding="utf-8")
+    out = tmp_path / "tiny.mp4"
+    summary = render(spec, out, None, "l", log=lambda *_: None, backend="moxian", burn_subtitles=True)
+    vtt = (tmp_path / "tiny.vtt").read_text(encoding="utf-8")
+    srt = (tmp_path / "tiny.srt").read_text(encoding="utf-8")
+    assert "看这里，a+b" in vtt and "{@" not in vtt and "$" not in vtt and "再看一遍" in srt
+    assert "subtitle:mov_text" in _streams(out)
+    burned = tmp_path / "tiny.burned.mp4"
+    assert burned.exists() and "subtitle:mov_text" not in _streams(burned)
+    ch = json.loads((tmp_path / "tiny.chapters.json").read_text(encoding="utf-8"))
+    assert ch["subtitles"] == {"vtt": "tiny.vtt", "srt": "tiny.srt", "embedded": "mov_text", "cues": 2,
+                               "burned": "tiny.burned.mp4"}
+    assert summary["subtitles"]["cues"] == 2
+    # 第二句的字幕在定格之后才出现
+    step = ch["chapters"][0]["steps"][0]
+    second = vtt.split("\n\n")[2].splitlines()[1].split(" --> ")[0]
+    h, m, s = second.split(":")
+    assert float(s) + 60 * int(m) >= step["resume"] - 1e-3
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="需要 ffmpeg")
+def test_subtitles_none_exports_nothing(tmp_path):
+    spec = tmp_path / "tiny.scene.yaml"
+    spec.write_text(TINY.replace("SUBS", "none"), encoding="utf-8")
+    out = tmp_path / "tiny.mp4"
+    summary = render(spec, out, None, "l", log=lambda *_: None, backend="moxian")
+    assert summary["subtitles"] == {} and not (tmp_path / "tiny.vtt").exists()
+    assert "subtitle:mov_text" not in _streams(out)
