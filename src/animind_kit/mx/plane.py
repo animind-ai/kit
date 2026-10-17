@@ -11,7 +11,8 @@ mesh: true 时另有一层彩色网格（mesh_role，默认 B）跟着 warp 变�
 - slide {name, at, copy}：箭头平移到尾巴在 at（分量不变）；写了 copy（新名字）时原来那支不动，滑过去的是一支虚线的副本；
 - point {name, at, label, role（默认 HL）, dir（名字在点的哪一边：u d l r ul ur dl dr，默认 ur）, fixed}：一个点；
   fixed: true 时它钉在画面上，整个平面 rotate / scale / warp / reset 时不跟着走（标出"原来在这里"、比较两种结果用）；
-- shape {name, points: [[x, y], …], role（默认 C）}：填色多边形（单位正方形、小旗子），跟着变换走；
+- shape {name, points: [[x, y], …], role（默认 C）, label, fill（默认 true；false 只描粗边）}：填色多边形（单位正方形、小旗子），跟着变换走；
+  label 写在多边形的重心上；
 - rotate {name（一个名字或名字列表；不写 = 整个平面）, angle（度，逆时针为正）, label, trace（默认 true）}：
   绕原点转；写了 name 时画出第一个东西的终点扫过的圆弧，弧旁写 label（例如 \\times i）；
 - scale {name（同上）, by}：以原点为中心放大 by 倍；
@@ -252,6 +253,8 @@ class Plane(Widget):
                 self.place_label(item, pts, label)
         elif item.kind == "shape":
             item.node.children[0].path = polygon([tuple(p) for p in P])
+            if label is not None:
+                self.place_label(item, pts, label)
 
     def place_label(self, item: Item, pts: np.ndarray, lab: Node) -> None:
         P = self.w(pts)
@@ -264,6 +267,8 @@ class Plane(Widget):
             half = np.array([lab.width, lab.height]) / 2
             reach = LABEL_GAP + float(np.dot(np.abs(nrm), half))
             lab.matrix = T.translate(*(a + (b - a) * item.extra.get("along", 0.5) + nrm * reach))
+        elif item.kind == "shape":
+            lab.matrix = T.translate(*P.mean(axis=0))
         elif item.kind == "point":
             d = np.array(item.dir)
             half = np.array([lab.width, lab.height]) / 2
@@ -370,14 +375,23 @@ class Plane(Widget):
             return out
         if act == "shape":
             color = t.color(args.get("role"), t.C)
-            body = PathNode(path=Path(), style=Style(fill=color, fill_opacity=t.fill_opacity(), stroke=color, stroke_width=3))
+            filled = args.get("fill", True)
+            body = PathNode(path=Path(), style=Style(fill=color if filled else None, fill_opacity=t.fill_opacity(),
+                                                     stroke=color, stroke_width=3 if filled else 6))
             node = Group(body, name=args["name"])
             node.set_style(opacity=0.0)
-            self.layer.children.insert(0, node)  # 多边形垫在箭头下面
-            item = Item("shape", args["name"], np.array(args["points"], dtype=float), node)
+            # 多边形垫在箭头下面；多边形之间后画的在上面
+            shapes = sum(1 for i in self.items.values() if i.kind == "shape" and i.node in self.layer.children)
+            self.layer.children.insert(shapes, node)
+            lab = None
+            if args.get("label"):
+                lab = self.label_node(args["label"], t.ink(args.get("role") or "C"))
+                lab.set_style(opacity=0.0)
+                self.labels.add(lab)
+            item = Item("shape", args["name"], np.array(args["points"], dtype=float), node, lab)
             self.items[item.name] = item
-            self.paint(item, item.pts)
-            return [FadeTo(node, 1.0, 0.5)]
+            self.paint(item, item.pts, lab)  # 新节点还看不见，建动作时就能摆好
+            return [FadeTo(node, 1.0, 0.5)] + ([FadeTo(lab, 1.0, 0.5)] if lab is not None else [])
         if act in ("rotate", "scale"):
             m = rotation(float(args["angle"])) if act == "rotate" else float(args["by"]) * np.eye(2)
             whole = args.get("name") is None

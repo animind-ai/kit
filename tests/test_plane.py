@@ -114,3 +114,20 @@ def test_fixed_points_stay_put():
     run(p.action("point", {"name": "o", "at": [1, 2], "fixed": True}) + p.action("vector", {"name": "e", "v": [1, 0]}))
     run(p.action("warp", {"matrix": [[2, 0], [0, 1]]}))
     assert np.allclose(p.items["o"].pts, [[1, 2]]) and np.allclose(tip(p, "e"), (2, 0))
+
+
+def test_shape_label_sits_on_the_centroid_and_later_shapes_draw_on_top():
+    p = plane(x=[0, 7], y=[0, 7], grid=False, numbers=False)
+    run(p.action("shape", {"name": "big", "points": [[0, 0], [7, 0], [7, 7], [0, 7]], "role": "A"}))
+    run(p.action("vector", {"name": "v", "v": [1, 0]}))
+    run(p.action("shape", {"name": "ov", "points": [[2, 2], [5, 2], [5, 5], [2, 5]], "role": "HL", "label": "(2b-a)^2"}))
+    assert np.allclose(p.items["ov"].label.matrix[:2, 2], (3.5, 3.5))
+    order = p.layer.children
+    assert order.index(p.items["big"].node) < order.index(p.items["ov"].node) < order.index(p.items["v"].node)
+
+
+def test_outline_only_shape():
+    p = plane()
+    run(p.action("shape", {"name": "o", "points": [[0, 0], [1, 0], [1, 1]], "fill": False}))
+    style = p.items["o"].node.children[0].style
+    assert style.fill is None and style.stroke is not None
