@@ -37,6 +37,7 @@ from moxian.encode import render_video
 from moxian.path import Path as VPath
 from moxian.path import line, rounded_rect
 from moxian.render import SkiaRenderer
+from moxian.text import Tex, Text
 from scene_spec import params as spec_params
 from scene_spec import segments as spec_segments
 from scene_spec import selectors
@@ -806,6 +807,29 @@ class MoxianCompiler:
         for _act, sel, deco in self.decorations:
             if selectors.parse(sel).obj in exempt:
                 deco.fixed = True
+        if any(a.get("act") == "camera" for beat in self.doc["beats"] for a in beat.get("do") or []):
+            for k in exempt:
+                self._backdrop(self.objects[k].node)
+
+    def _backdrop(self, node: Node) -> None:
+        """不跟镜头走的对象垫一块底色：镜头推近时放大的图从它下面经过，线不会穿过字。
+
+        底色就是背景色，没有东西从下面经过时看不出来。每个对象只垫一次。
+        """
+        done = self.__dict__.setdefault("_backdrops", set())
+        if id(node) in done or isinstance(node, (Text, Tex)):
+            return  # 整个对象就是一段 Text / Tex：垫进去会被当成字形，不垫
+        boxes = [b for c in node.children if (b := c.bbox(np.eye(3))) is not None]
+        if not boxes:
+            return
+        done.add(id(node))
+        box = boxes[0]
+        for b in boxes[1:]:
+            box = box.union(b)
+        pad = PathNode(path=rounded_rect(box.width + 0.24, box.height + 0.16, 0.08), style=Style(fill=self.t.BG),
+                       z=-10, name="backdrop")
+        pad.move_to(box.center)
+        node.add(pad)
 
     # ---------- 强调、标记、装饰 ----------
 
@@ -885,14 +909,34 @@ class MoxianCompiler:
                 y = box.y0 - 0.06
                 deco.path = line(box.x0, y, box.x1, y)
             elif act == "circle":
-                deco.path = rounded_rect(box.width + 0.2, box.height + 0.2, 0.12)
-                deco.move_to(box.center)
+                left, right = self._circle_room(node, box)
+                deco.path = rounded_rect(box.width + left + right, box.height + 0.2, 0.12)
+                deco.move_to(box.center + np.array([(right - left) / 2, 0.0]))
             else:
                 deco.path = line(box.x0, box.y0, box.x1, box.y1).extend(line(box.x0, box.y1, box.x1, box.y0))
             self._attach(deco, self.root, node)
 
         d = DEFAULT_DUR[act]
         return _Overlay(Draw(deco, d) if act != "cross" else fade_in(deco, d), setup)
+
+    def _circle_room(self, node: Node, box: BBox, pad: float = 0.1) -> tuple[float, float]:
+        """圈的左右留白：默认 pad；同一行紧挨着别的字（例如「A₈ =」后面的填空横线）时只占一半空隙，圈不压到它。"""
+        left = right = pad
+        nodes = set(map(id, node.children)) | {id(node)}
+        for sib in self.parent_of(node).children:
+            if id(sib) in nodes:
+                continue
+            try:
+                b = self.wbox(sib)
+            except ValueError:
+                continue
+            if b.y1 < box.y0 or b.y0 > box.y1:
+                continue  # 不在同一行
+            if b.x0 >= box.x1 - 1e-6:
+                right = min(right, (b.x0 - box.x1) / 2)
+            elif b.x1 <= box.x0 + 1e-6:
+                left = min(left, (box.x0 - b.x1) / 2)
+        return max(left, 0.02), max(right, 0.02)
 
     def _drop_overlays(self, obj_id: str, keep_focus: bool = False) -> list[Node]:
         extras: list[Node] = []

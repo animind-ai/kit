@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+import numpy as np
 from moxian.anim import Animation, Grow, Restyle, fade_in, fade_out, together
 from moxian.core import DOWN, LEFT, RIGHT, UP, Group, Node, PathNode, Style, arrange
 from moxian.path import line, rect, rounded_rect
@@ -341,12 +342,33 @@ class DiffTable(Widget):
             pts = [self.cells[r][i - 1], self.cells[r + 1][i - 1], self.cells[r][i]]
             from moxian.path import polygon
 
-            tri = PathNode(path=polygon([tuple(m.center()) for m in pts]),
+            tri = PathNode(path=polygon(enclosing_triangle(pts, margin=0.08)),
                            style=Style(stroke=self.theme.HL_INK, stroke_width=3, fill=self.theme.HL, fill_opacity=0.12, opacity=0.0))
             self.extra.children.clear()
             self.extra.add(tri)
             return [fade_in(tri, 0.4)]
         raise KeyError(act)
+
+
+def enclosing_triangle(cells: list[Node], margin: float) -> list[tuple[float, float]]:
+    """连起三个格子的三角形，三条边各自往外平移到让两端的数整个落在里面（不从字上穿过）。"""
+    centers = [c.center() for c in cells]
+    halves = [np.array([c.width, c.height]) / 2 for c in cells]
+    g = np.mean(centers, axis=0)
+    lines = []
+    for i in range(3):
+        a, b = centers[i], centers[(i + 1) % 3]
+        n = np.array([b[1] - a[1], a[0] - b[0]])
+        n /= np.linalg.norm(n)
+        if np.dot(n, a - g) < 0:
+            n = -n
+        reach = max(float(np.dot(np.abs(n), halves[k])) for k in (i, (i + 1) % 3)) + margin
+        lines.append((n, float(np.dot(n, a)) + reach))
+    out = []
+    for i in range(3):  # 第 i 个顶点 = 第 i-1 条边和第 i 条边的交点
+        (n1, c1), (n2, c2) = lines[i - 1], lines[i]
+        out.append(tuple(float(v) for v in np.linalg.solve(np.array([n1, n2]), np.array([c1, c2]))))
+    return out
 
 
 REGISTRY: dict[str, type[Widget]] = {

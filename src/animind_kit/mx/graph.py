@@ -11,6 +11,13 @@
 - 尖点（abs 的零点）用单侧导数：对偶数的 abs 在 0 处取 |方向|，段首用右导数、段尾用左导数，所以尖角是尖的。
 点、点的名字、刻度和坐标轴名字都放在 keep_size 的组里：镜头放大 60 倍，它们跟着走、大小不变。
 
+文字避让（_declutter，建好时和每次参数 / 割线变化后跑一遍）：组件里所有的线（坐标轴、曲线、割线、切线、
+直线、斜率三角形的边，不管此刻显不显示，免得名字随显隐跳来跳去）当障碍——
+- 曲线名字：右端旁边放不下就往下挪，再不行放到端点正上方、端点左边；
+- 点的名字：label_dir（或默认的法线方向）只是首选，被线穿过时在 16 个方向、三档距离里找最近的空位；
+  动起来的点（割线的 Q）当前位置还空着就不挪，免得逐帧跳；
+- 刻度数字：被线穿过、或被上面这些名字和三角形的标注压住时隐去（刻度线还在）。
+
 暴露的子元素（都可以单独 show / focus / mark）：
 - axes：坐标轴（含刻度、名字）；plot / plot_label：曲线和它的名字；
 - point / dot：曲线上的点（point 含名字，dot 只有圆点，镜头对准它时中心正好是点本身）；
@@ -40,13 +47,18 @@ from moxian.core import transform as T
 from moxian.path import Path, circle, line, polygon
 from scene_spec.expr import evaluate, free_names, parse
 
+from ..lint import crosses, segments_of
 from .readout import number
+from .scan import flatten
 from .text import mmath, mtext
 from .widgets import Built, Widget
 
 TOL = 2e-6  # 曲线贝塞尔近似的容许误差（数学单位）；放大 60 倍时远小于一个像素
 MAX_DEPTH = 22
 SAMPLES = 600  # 找定义域、找出框位置时的采样数
+CLEAR = 0.04  # 文字离线至少这么远（画面单位）
+AROUND = [math.pi * k / 8 for k in range(16)]  # 点的名字找空位时试的方向
+REACH = (1.0, 1.5, 2.1)  # …… 和距离（名字中心离点的距离的倍数）
 LABEL_DIRS = {
     "u": (0.0, 1.0), "d": (0.0, -1.0), "l": (-1.0, 0.0), "r": (1.0, 0.0),
     "ul": (-0.7, 0.7), "ur": (0.7, 0.7), "dl": (-0.7, -0.7), "dr": (0.7, -0.7),
@@ -341,6 +353,11 @@ class Graph(Widget):
         self.used: set[str] = set()  # 用到的场景参数
         self.refreshers: list = []  # 参数变了要重算的部件：无参函数，按当前参数值更新
         node = Group(name=self.obj_id)
+        self.ready = False
+        self.tick_slots: list[tuple[Group, Node]] = []  # (刻度的 keep 组, 刻度数字)
+        self.axis_lines: list[PathNode] = []
+        self.plot_labels: list[tuple[Group, Node, list[np.ndarray]]] = []  # (keep 组, 名字, 候选中心)
+        self.marker_labels: list[dict] = []
         parts: dict[str, list[Node]] = {k: [] for k in (
             "axes", "plot", "plot_label", "point", "dot", "secant", "qpoint", "slope", "tangent", "line", "triangle")}
 
@@ -453,8 +470,12 @@ class Graph(Widget):
             if run[1] or self._point_moves(p):
                 self.refreshers.append(build)
 
+        self.parts = parts
+        self.ready = True
+        self._declutter()
         if self.refreshers:
-            # 参数一变就把依赖它的部件全部重算一遍（每帧至多一次；参数不动时不调用）
+            # 参数一变就把依赖它的部件全部重算一遍（每帧至多一次；参数不动时不调用），再重新避让
+            self.refreshers.append(self._declutter)
             updater(node, lambda _n: [r() for r in self.refreshers], *(self.params[n] for n in sorted(self.used)))
 
         items = [n for key in ("axes", "plot", "plot_label", "tangent", "line", "triangle", "secant", "point", "qpoint",
@@ -566,8 +587,9 @@ class Graph(Widget):
         ax_x = 0.0 if x0 <= 0 <= x1 else x0
         style = Style(stroke=t.DIM, stroke_width=2.5)
         g = Group(name="axes")
-        g.add(PathNode(path=line(*self._s(x0, ax_y), *self._s(x1, ax_y)), style=style))
-        g.add(PathNode(path=line(*self._s(ax_x, y0), *self._s(ax_x, y1)), style=style))
+        self.axis_lines = [PathNode(path=line(*self._s(x0, ax_y), *self._s(x1, ax_y)), style=style),
+                           PathNode(path=line(*self._s(ax_x, y0), *self._s(ax_x, y1)), style=style)]
+        g.add(*self.axis_lines)
         a = 0.14
         g.add(self._keep(self._s(x1, ax_y), PathNode(path=polygon([(a, 0), (-a * 0.6, a * 0.55), (-a * 0.6, -a * 0.55)]),
                                                       style=Style(fill=t.DIM))))
@@ -595,7 +617,10 @@ class Graph(Widget):
                         lab = mmath(f"{v:g}", self.LABEL * 0.8, t.DIM)
                         lab.move_to([0.0, -0.32] if axis == "x" else [-0.3, 0.0])
                         kids.append(lab)
-                    g.add(self._keep(pos, *kids))
+                    slot = self._keep(pos, *kids)
+                    if tick_labels:
+                        self.tick_slots.append((slot, lab))
+                    g.add(slot)
         return g
 
     def _plot_label(self, f: Function, tex: str, color: str, dom) -> Node:
@@ -605,10 +630,16 @@ class Graph(Widget):
         x = runs[-1][1] if runs else float(dom[1])
         y = f(x)
         lab = mmath(tex, self.LABEL, color)
-        lab.move_to([0.0, 0.0]).shift([0.15 + lab.width / 2, -0.05])
+        right = np.array([0.15 + lab.width / 2, -0.05])
         if y > y1 - 0.08 * (y1 - y0):  # 顶到上沿：名字放在线的右下
-            lab.shift([0.0, -0.35])
-        return self._keep(self._s(x, y), lab, name="plot_label")
+            right[1] -= 0.35
+        # 候选：右边，往下挪一两档，端点正上方，端点左边（被线穿过时 _declutter 依次往后试）
+        spots = [right, right - [0.0, 0.4], right - [0.0, 0.8], np.array([0.0, 0.12 + lab.height / 2]),
+                 np.array([-right[0], right[1]])]
+        lab.move_to(spots[0])
+        g = self._keep(self._s(x, y), lab, name="plot_label")
+        self.plot_labels.append((g, lab, spots))
+        return g
 
     def _label_dir(self, k: int, x: float) -> tuple[float, float]:
         """点的名字默认放在曲线凸出的那一侧的反面：沿法线，避开曲线和切线。"""
@@ -625,16 +656,23 @@ class Graph(Widget):
     def _marker(self, at: tuple[float, float], label: str | None, color: str, direction, name: str) -> tuple[Group, PathNode]:
         dot = PathNode(path=circle(self.DOT), style=Style(fill=color), name="dot")
         kids: list[Node] = [dot]
+        lab = None
         if label:
             lab = mmath(label, self.LABEL, color)
             v = np.array(LABEL_DIRS[direction] if isinstance(direction, str) else direction, dtype=float)
             v /= np.linalg.norm(v)
-            r = 0.16 + 0.5 * math.hypot(lab.width * v[0], lab.height * v[1])
-            lab.move_to(v * r)
+            lab.move_to(v * self._reach(lab, v))
             kids.append(lab)
         g = self._keep(self._s(*at), *kids, name=name)
         g.z = 3
+        if lab is not None:
+            self.marker_labels.append({"group": g, "label": lab, "angle": math.atan2(v[1], v[0]), "at": None})
         return g, dot
+
+    @staticmethod
+    def _reach(lab: Node, v) -> float:
+        """名字中心离点多远：点的半径加上名字在 v 方向上的半宽。"""
+        return 0.16 + 0.5 * math.hypot(lab.width * v[0], lab.height * v[1])
 
     def _line_path(self, point: tuple[float, float], direction: tuple[float, float]) -> Path:
         seg = clip_line(point, direction, self.box)
@@ -645,6 +683,87 @@ class Graph(Widget):
 
     def _line_node(self, point, direction, color: str, width: float, name: str) -> PathNode:
         return PathNode(path=self._line_path(point, direction), style=Style(stroke=color, stroke_width=width), z=1, name=name)
+
+    # ---- 文字避让 ----
+
+    def _lines(self) -> tuple[np.ndarray, np.ndarray]:
+        """组件里所有线段（局部坐标），按 Path 对象缓存折线。"""
+        cache = self.__dict__.setdefault("_flat", {})
+        nodes: list[PathNode] = [*self.axis_lines]
+        for key in ("plot", "secant", "tangent", "line"):
+            nodes += self.parts[key]
+        for tri in self.parts["triangle"]:
+            nodes += [c for c in tri.children if isinstance(c, PathNode)]
+        starts, ends = [], []
+        for n in nodes:
+            path = n.path
+            if path is None or path.is_empty():
+                continue
+            hit = cache.get(id(n))
+            if hit is None or hit[0] is not path:
+                hit = (path, segments_of(*flatten(path, n.matrix)))
+                cache[id(n)] = hit
+            starts.append(hit[1][0])
+            ends.append(hit[1][1])
+        if not starts:
+            return np.zeros((0, 2)), np.zeros((0, 2))
+        return np.vstack(starts), np.vstack(ends)
+
+    @staticmethod
+    def _box(node: Node, parent: np.ndarray) -> tuple[float, float, float, float] | None:
+        b = node.bbox(parent)
+        return None if b is None else (b.x0, b.y0, b.x1, b.y1)
+
+    @staticmethod
+    def _meets(a, b, pad: float = 0.0) -> bool:
+        return a[0] - pad < b[2] and b[0] - pad < a[2] and a[1] - pad < b[3] and b[1] - pad < a[3]
+
+    def _declutter(self) -> None:
+        a, b = self._lines()
+
+        def clear(box, taken) -> bool:
+            grown = (box[0] - CLEAR, box[1] - CLEAR, box[2] + CLEAR, box[3] + CLEAR)
+            return not crosses(a, b, grown) and not any(self._meets(box, t, CLEAR) for t in taken)
+
+        taken = []
+        for tri in self.parts["triangle"]:
+            taken += [bx for c in tri.children if not isinstance(c, PathNode) and (bx := self._box(c, tri.matrix))]
+        for g, lab, spots in self.plot_labels:
+            for spot in spots:
+                lab.move_to(spot)
+                if clear(self._box(lab, g.matrix), taken):
+                    break
+            else:
+                lab.move_to(spots[0])
+            taken.append(self._box(lab, g.matrix))
+        for m in self.marker_labels:
+            g, lab = m["group"], m["label"]
+            at = g.matrix[:2, 2].copy()
+            if m["at"] is not None and not np.allclose(at, m["at"]):
+                if clear(self._box(lab, g.matrix), taken):  # 点在动：当前位置还空着就不挪
+                    m["at"] = at
+                    taken.append(self._box(lab, g.matrix))
+                    continue
+            m["at"] = at
+            best = None
+            for angle in AROUND + [m["angle"]]:
+                turn = abs((angle - m["angle"] + math.pi) % (2 * math.pi) - math.pi)
+                v = np.array([math.cos(angle), math.sin(angle)])
+                for k, f in enumerate(REACH):
+                    cost = turn / math.pi + 0.6 * k
+                    if best is not None and cost >= best[0]:
+                        break
+                    lab.move_to(v * self._reach(lab, v) * f)
+                    if clear(self._box(lab, g.matrix), taken):
+                        best = (cost, v * self._reach(lab, v) * f)
+                        break
+            v = np.array([math.cos(m["angle"]), math.sin(m["angle"])])
+            lab.move_to(best[1] if best else v * self._reach(lab, v))
+            taken.append(self._box(lab, g.matrix))
+        for slot, lab in self.tick_slots:
+            box = self._box(lab, slot.matrix)
+            shown = clear(box, taken)
+            slot.children = [slot.children[0], lab] if shown else [slot.children[0]]
 
     # ---- 割线 ----
 
@@ -659,6 +778,8 @@ class Graph(Widget):
         seg.path = self._line_path((x, f(x)), (1.0, slope))  # 每次换一个新的 Path：渲染器按对象缓存
         if readout is not None:
             readout.children = [self._readout_text(i, f"{info['prefix']} {slope:.2f}", info["ink"])]
+        if getattr(self, "ready", False):
+            self._declutter()
 
     def _readout_text(self, i: int, text: str, color: str) -> Node:
         """读数文字按 (第几条割线, 文字) 缓存：同一个节点不会同时挂在两处。"""
