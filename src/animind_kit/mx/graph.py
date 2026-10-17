@@ -17,6 +17,12 @@
 - secant / qpoint / slope：割线、割线的第二个点 Q（含名字）、割线斜率读数（默认在左上角，readout_at 可改，数学坐标）；
 - tangent：切线；line：其他直线（竖线 x=c，或过某点、给定斜率的直线）。
 
+- triangle：斜率三角形（从点出发横走 run、再竖着走到曲线上，两条直角边标上长度）。
+
+场景参数（scene-spec 顶层 params）：曲线的 f、点的 x、直线的 x / slope / through、三角形的 run 都可以写
+引用参数的表达式（"k*x+1"、"t"）。组件在 moxian 的参数机制上挂一个 updater：参数一变，
+曲线重算贝塞尔、点挪到新位置、三角形和标注重建、割线和切线跟着点走。
+
 动作：
 - draw {plot: i}：沿曲线画出来；
 - approach {secant: i, h: 目标}：Q 沿曲线滑到 x0+h，h 按几何级数变（1 → 0.1 → 0.01 看起来匀速），
@@ -28,12 +34,13 @@ from __future__ import annotations
 import math
 
 import numpy as np
-from moxian.anim import Animation, Draw, easing
+from moxian.anim import Animation, Draw, Param, easing, updater
 from moxian.core import Group, Node, PathNode, Style
 from moxian.core import transform as T
 from moxian.path import Path, circle, line, polygon
-from scene_spec.expr import parse
+from scene_spec.expr import evaluate, free_names, parse
 
+from .readout import number
 from .text import mmath, mtext
 from .widgets import Built, Widget
 
@@ -114,17 +121,19 @@ def _call(name: str, a: Dual) -> Dual:
     raise KeyError(name)
 
 
-def _dual(node: tuple, x: Dual) -> Dual:
+def _dual(node: tuple, x: Dual, env: dict[str, float] | None = None) -> Dual:
     op = node[0]
     if op == "num":
         return Dual(node[1])
     if op == "x":
         return x
+    if op == "var":
+        return Dual(env[node[1]])  # 参数对 x 是常数
     if op == "neg":
-        return -_dual(node[1], x)
+        return -_dual(node[1], x, env)
     if op == "call":
-        return _call(node[1], _dual(node[2], x))
-    a, b = _dual(node[1], x), _dual(node[2], x)
+        return _call(node[1], _dual(node[2], x, env))
+    a, b = _dual(node[1], x, env), _dual(node[2], x, env)
     if op == "add":
         return a + b
     if op == "sub":
@@ -137,15 +146,20 @@ def _dual(node: tuple, x: Dual) -> Dual:
 
 
 class Function:
-    """白名单表达式 → 可求值、可求单侧导数的函数。"""
+    """白名单表达式 → 可求值、可求单侧导数的函数。params 给出时可以引用场景参数（按当前值求值）。"""
 
-    def __init__(self, text: str):
+    def __init__(self, text: str, params: dict[str, Param] | None = None):
         self.text = text
-        self.tree = parse(text)
+        self.params = params or {}
+        self.tree = parse(text, set(self.params))
+        self.names = free_names(self.tree)
+
+    def env(self) -> dict[str, float]:
+        return {n: self.params[n].value for n in self.names}
 
     def _at(self, x: float, direction: float) -> Dual | None:
         try:
-            r = _dual(self.tree, Dual(x, direction))
+            r = _dual(self.tree, Dual(x, direction), self.env() if self.names else None)
         except (ValueError, ZeroDivisionError, OverflowError):
             return None
         return r if math.isfinite(r.v) else None
@@ -324,39 +338,45 @@ class Graph(Widget):
         (x0, x1), (y0, y1) = self.xr, self.yr
         self.box = (x0, x1, y0, y1)
         self.u = float(d.get("unit") or min(self.WIDTH / (x1 - x0), self.HEIGHT / (y1 - y0)))
+        self.used: set[str] = set()  # 用到的场景参数
+        self.refreshers: list = []  # 参数变了要重算的部件：无参函数，按当前参数值更新
         node = Group(name=self.obj_id)
         parts: dict[str, list[Node]] = {k: [] for k in (
-            "axes", "plot", "plot_label", "point", "dot", "secant", "qpoint", "slope", "tangent", "line")}
+            "axes", "plot", "plot_label", "point", "dot", "secant", "qpoint", "slope", "tangent", "line", "triangle")}
 
         axes = self._axes(d.get("ticks", 1), d.get("tick_labels", True), d.get("axis_labels", ["x", "y"]))
         node.add(axes)
         parts["axes"].append(axes)
 
         self.fns: list[Function] = []
+        self.point_x = [self._expr(spec["x"]) for spec in d.get("points") or []]
         for i, spec in enumerate(d["plots"]):
-            f = Function(spec["f"])
+            f = Function(spec["f"], self.params)
+            self.used |= f.names
             self.fns.append(f)
             dom = spec.get("domain") or self.xr
-            breaks = [p["x"] for p in d.get("points") or [] if p.get("plot", 0) == i]
-            path = bezier_path(curve_segments(f, float(dom[0]), float(dom[1]), y0, y1, breaks), self.u)
-            curve = PathNode(path=path, style=Style(stroke=t.color(spec.get("role"), t.A), stroke_width=5), z=2,
-                             name=f"plot{i}")
+            curve = PathNode(path=self._curve_path(i, dom), style=Style(stroke=t.color(spec.get("role"), t.A), stroke_width=5),
+                             z=2, name=f"plot{i}")
             parts["plot"].append(curve)
             label = Group(name=f"plot_label{i}")
             if spec.get("label"):
                 label = self._plot_label(f, spec["label"], t.ink(spec.get("role", "A")), dom)
             parts["plot_label"].append(label)
             node.add(curve, label)
+            if f.names or any(self.point_x[j][1] for j, p in enumerate(d.get("points") or []) if p.get("plot", 0) == i):
+                self.refreshers.append(lambda i=i, dom=dom, curve=curve, label=label: self._refresh_plot(i, dom, curve, label))
 
         self.points: list[tuple[int, float]] = []
         for i, spec in enumerate(d.get("points") or []):
-            k, x = int(spec.get("plot", 0)), float(spec["x"])
+            k, x = int(spec.get("plot", 0)), self.point_x[i][0]()
             self.points.append((k, x))
             marker, dot = self._marker((x, self.fns[k](x)), spec.get("label"), t.color(spec.get("role"), t.C),
                                        spec.get("label_dir") or self._label_dir(k, x), f"point{i}")
             parts["point"].append(marker)
             parts["dot"].append(dot)
             node.add(marker)
+            if self.point_x[i][1] or self.fns[k].names:
+                self.refreshers.append(lambda i=i, marker=marker: self._refresh_point(i, marker))
 
         # 割线：一条直线 + 第二个点 Q（+ 可选的斜率读数）。h 存在 self.h 里，approach 逐帧改
         self.h: list[float] = []
@@ -382,31 +402,148 @@ class Graph(Widget):
             parts["qpoint"].append(q)
             node.add(seg, q)
             self.set_h(i, self.h[i])
+            if self._point_moves(p):
+                self.refreshers.append(lambda i=i: self.set_h(i, self.h[i]))
 
         for i, spec in enumerate(d.get("tangents") or []):
-            k, x = self.points[int(spec.get("point", 0))]
-            f = self.fns[k]
-            slope = f.slope(x)
-            if not math.isfinite(slope):
-                raise ValueError(f"graph {self.obj_id}：{f.text} 在 x={x:g} 处左右导数不相等，没有切线")
-            seg = self._line_node((x, f(x)), (1.0, slope), t.ink(spec.get("role", "HL")), 3, f"tangent{i}")
-            seg.z = 2.5  # 叠在曲线上面（细线）：放大后能看见它和曲线几乎贴在一起
+            p = int(spec.get("point", 0))
+            seg = PathNode(path=self._tangent_path(p), style=Style(stroke=t.ink(spec.get("role", "HL")), stroke_width=3),
+                           z=2.5, name=f"tangent{i}")  # 叠在曲线上面（细线）：放大后能看见它和曲线几乎贴在一起
             parts["tangent"].append(seg)
             node.add(seg)
+            if self._point_moves(p):
+                self.refreshers.append(lambda p=p, seg=seg: setattr(seg, "path", self._tangent_path(p)))
 
         for i, spec in enumerate(d.get("lines") or []):
             color = t.color(spec.get("role"), t.NO)
             if "x" in spec:
-                seg = self._line_node((float(spec["x"]), 0.0), (0.0, 1.0), color, 3, f"line{i}")
+                xs = self._expr(spec["x"])
+
+                def geom(xs=xs):
+                    return (xs[0](), 0.0), (0.0, 1.0)
+
+                moving = xs[1]
             else:
-                px, py = (float(v) for v in spec["through"])
-                seg = self._line_node((px, py), (1.0, float(spec["slope"])), color, 3, f"line{i}")
+                px, py, sl = self._expr(spec["through"][0]), self._expr(spec["through"][1]), self._expr(spec["slope"])
+
+                def geom(px=px, py=py, sl=sl):
+                    return (px[0](), py[0]()), (1.0, sl[0]())
+
+                moving = px[1] or py[1] or sl[1]
+            seg = self._line_node(*geom(), color, 3, f"line{i}")
             parts["line"].append(seg)
             node.add(seg)
+            if moving:
+                self.refreshers.append(lambda seg=seg, geom=geom: setattr(seg, "path", self._line_path(*geom())))
 
-        items = [n for key in ("axes", "plot", "plot_label", "tangent", "line", "secant", "point", "qpoint", "slope")
-                 for n in parts[key]]
+        for i, spec in enumerate(d.get("triangles") or []):
+            tri = Group(name=f"triangle{i}")
+            tri.z = 1.5
+            run = self._expr(spec.get("run", 1))
+            role = spec.get("role", "C")
+            p = int(spec.get("point", 0))
+            labels = bool(spec.get("labels", True))
+
+            def build(tri=tri, p=p, run=run, role=role, labels=labels):
+                tri.children = self._triangle(p, run[0](), role, labels)
+
+            build()
+            parts["triangle"].append(tri)
+            node.add(tri)
+            if run[1] or self._point_moves(p):
+                self.refreshers.append(build)
+
+        if self.refreshers:
+            # 参数一变就把依赖它的部件全部重算一遍（每帧至多一次；参数不动时不调用）
+            updater(node, lambda _n: [r() for r in self.refreshers], *(self.params[n] for n in sorted(self.used)))
+
+        items = [n for key in ("axes", "plot", "plot_label", "tangent", "line", "triangle", "secant", "point", "qpoint",
+                               "slope") for n in parts[key]]
         return Built(node, parts=parts, items=items)
+
+    # ---- 参数 ----
+
+    def _expr(self, value) -> tuple:
+        """数或参数表达式 → (取当前值的函数, 是否依赖参数)。"""
+        if not isinstance(value, str):
+            v = float(value)
+            return (lambda: v), False  # noqa: E731
+        tree = parse(value, set(self.params), allow_x=False)
+        names = free_names(tree)
+        self.used |= names
+        params = self.params
+        return (lambda: evaluate(tree, math.nan, {n: params[n].value for n in names})), bool(names)
+
+    def _point_moves(self, p: int) -> bool:
+        k = self.points[p][0]
+        return bool(self.point_x[p][1] or self.fns[k].names)
+
+    def _point(self, p: int) -> tuple[int, float]:
+        """第 p 个点的 (曲线序号, 当前 x)。"""
+        k = self.points[p][0]
+        return k, self.point_x[p][0]()
+
+    def _curve_path(self, i: int, dom) -> Path:
+        (y0, y1) = self.yr
+        breaks = [self.point_x[j][0]() for j, p in enumerate(self.definition.get("points") or []) if p.get("plot", 0) == i]
+        return bezier_path(curve_segments(self.fns[i], float(dom[0]), float(dom[1]), y0, y1, breaks), self.u)
+
+    def _refresh_plot(self, i: int, dom, curve: PathNode, label: Group) -> None:
+        curve.path = self._curve_path(i, dom)
+        if label.children and self.fns[i].names:
+            (y0, y1) = self.yr
+            runs = visible_runs(self.fns[i], float(dom[0]), float(dom[1]), y0, y1)
+            x = runs[-1][1] if runs else float(dom[1])
+            label.matrix = T.translate(*self._s(x, self.fns[i](x)))
+
+    def _refresh_point(self, i: int, marker: Group) -> None:
+        k, x = self._point(i)
+        y = self.fns[k](x)
+        if math.isfinite(y):
+            marker.matrix = T.translate(*self._s(x, y))
+
+    def _tangent_path(self, p: int) -> Path:
+        k, x = self._point(p)
+        f = self.fns[k]
+        slope = f.slope(x)
+        if not math.isfinite(slope):
+            if not self._point_moves(p):
+                raise ValueError(f"graph {self.obj_id}：{f.text} 在 x={x:g} 处左右导数不相等，没有切线")
+            return Path()
+        return self._line_path((x, f(x)), (1.0, slope))
+
+    def _triangle(self, p: int, run: float, role: str, labels: bool) -> list[Node]:
+        """斜率三角形：P →（横走 run）→ 竖着走到曲线上。两条直角边标上长度（横边在下、竖边在外侧）。"""
+        t = self.theme
+        k, x = self._point(p)
+        f = self.fns[k]
+        ax, ay = x, f(x)
+        bx = x + run
+        by = f(bx)
+        if not all(math.isfinite(v) for v in (ay, by)):
+            return []
+        color = t.color(role, t.C)
+        ink = t.ink(role)
+        style = Style(stroke=color, stroke_width=4)
+        out: list[Node] = [
+            PathNode(path=line(*self._s(ax, ay), *self._s(bx, ay)), style=style, name="run"),
+            PathNode(path=line(*self._s(bx, ay), *self._s(bx, by)), style=style, name="rise"),
+        ]
+        if labels:
+            rise = by - ay
+            size = self.LABEL * 0.9
+            lab_run = number(run, size, ink, trimmed=True)
+            b = lab_run.bbox()
+            below = rise >= 0  # 横边在三角形下沿时标在下面，否则标在上面
+            cx, cy = self._s((ax + bx) / 2, ay)
+            lab_run.shift([cx - b.center[0], cy - (b.y1 + 0.12 if below else b.y0 - 0.12)])
+            lab_rise = number(rise, size, ink, trimmed=True)
+            b = lab_rise.bbox()
+            sx, sy = self._s(bx, (ay + by) / 2)
+            side = 1.0 if run >= 0 else -1.0  # 竖边外侧
+            lab_rise.shift([sx + side * (0.14 + b.width / 2) - b.center[0], sy - b.center[1]])
+            out += [lab_run, lab_rise]
+        return out
 
     # ---- 构件 ----
 
@@ -511,7 +648,7 @@ class Graph(Widget):
 
     def set_h(self, i: int, h: float) -> None:
         seg, q, readout, info = self.secants[i]
-        k, x = self.points[info["point"]]
+        k, x = self._point(info["point"]) if hasattr(self, "point_x") else self.points[info["point"]]
         f = self.fns[k]
         self.h[i] = h
         qx = x + h

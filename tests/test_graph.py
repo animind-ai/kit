@@ -112,7 +112,7 @@ def test_widget_parts_and_keep_size():
     assert isinstance(g, Graph)
     counts = {k: len(v) for k, v in g.built.parts.items()}
     assert counts == {"axes": 1, "plot": 1, "plot_label": 1, "point": 1, "dot": 1, "secant": 2,
-                      "qpoint": 2, "slope": 1, "tangent": 1, "line": 1}
+                      "qpoint": 2, "slope": 1, "tangent": 1, "line": 1, "triangle": 0}
     assert len(g.built.items) == sum(counts.values()) - counts["dot"]
     p = g.built.parts["point"][0]
     assert p.keep_size and np.allclose(p.matrix[:2, 2], np.array([1.0, 1.0]) * g.u)  # 局部原点就是 P
