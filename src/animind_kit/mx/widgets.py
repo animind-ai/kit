@@ -49,6 +49,11 @@ class Widget:
     def focus(self, index: int | None) -> list[Animation] | None:
         return None
 
+    def restyle(self, sel, args: dict) -> list[Animation] | None:
+        """内置的 set {role, opacity} 指向组件的一部分时，组件可以自己处理（样式在子节点上、改组的 fill 不起作用时）；
+        返回 None 时后端按默认做法改目标节点的样式。"""
+        return None
+
 
 # ---------- 题卡 ----------
 
@@ -393,6 +398,7 @@ REGISTRY: dict[str, type[Widget]] = {
     "area_grid": __import__("animind_kit.mx.grid", fromlist=["AreaGrid"]).AreaGrid,  # 格子正方形在 grid.py（分数乘法的交叠格；rect 模式切长方形）
     "ten_frame": __import__("animind_kit.mx.dots", fromlist=["TenFrame"]).TenFrame,  # 十格框在 dots.py（凑十）
     "dot_array": __import__("animind_kit.mx.dots", fromlist=["DotArray"]).DotArray,  # 点阵在 dots.py（转 90°、补满、淡出一列）
+    "solid": __import__("animind_kit.mx.solid", fromlist=["Solid"]).Solid,  # 立体在 solid.py（轴测图、剖成三个四棱锥、截面）
 }
 
 

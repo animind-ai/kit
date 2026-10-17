@@ -15,6 +15,8 @@
   `rect: true` 时是小方格拼成的长方形：`split` 按段切开并标出各段长度、`apart` / `join` 分开拼回、`fill` 涂块并写格数、`unfill`，分配律和竖式乘法用。
 - **十格框和点阵** `mx/dots.py`（`ten_frame`、`dot_array`）：十格框 `fill` / `side` / `move_in` / `count` / `recolor` / `remove`（凑十）；
   点阵 `rotate`（整体转 90°）、`extend`（补满到 10）、`fade_col`（淡出一列）、`squares`（点放进方格）、`recolor`。示例 `scene-spec/examples/numbers.scene.yaml`。
+- **立体** `mx/solid.py`（`solid`）：正方体、长方体、四棱锥、圆柱、圆锥的轴测图（淡色面、看不见的棱画虚线）；正方体剖成三个全等的四棱锥 `split` / `apart` / `join` / `unsplit`；
+  截平面 `sweep` 扫过几个立体、`compare` 把截面平铺到旁边比大小（祖暅原理）；`set {role}` 换面和棱的颜色。示例 `scene-spec/examples/solids.scene.yaml`。
 - **墨线后端** `backends/moxian_backend.py` + `mx/`：对象树跨 beat 常驻，每个 beat 一条时间线；文字、组件、布局都在 `mx/` 里用墨线实现。动作按旁白句子和书签的时刻播放，画面跟不上旁白时打印 `CUE LATE`。
 - **Manim 后端** `backends/manim_backend.py` + `widgets/`：保留用于对照，每个 beat 一个 Scene。
 - **渲染** `render.py`：逐 beat 渲染，和旁白合成，拼成一支成片。
@@ -22,7 +24,7 @@
 
 分段播放（`step` 子步定格、`ghost` 残影、`pin` 常驻，见 scene-spec 设计稿 §7.6）、字幕导出的定格顺延只有墨线后端实现；Manim 后端只导出字幕和章节。
 
-还没有：自动布局求解（现在只按约束摆放 + 检查）、三维、camera 动作、area_model 等洞察系列的原语、Whisper 词级时间戳（书签时刻按字符位置估算）。
+还没有：自动布局求解（现在只按约束摆放 + 检查）、三维（`solid` 是固定视角的轴测图，不能转视角）、camera 动作、area_model 等洞察系列的原语、Whisper 词级时间戳（书签时刻按字符位置估算）。
 
 ## 用法
 

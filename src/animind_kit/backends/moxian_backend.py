@@ -770,6 +770,11 @@ class MoxianCompiler:
         if act in ("underline", "circle", "cross"):
             return [self._decoration(act, action["target"])], DEFAULT_DUR[act]
         if act == "set":
+            sel = selectors.parse(action["target"])
+            widget = self.objects[sel.obj].widget
+            custom = widget.restyle(sel, args) if widget else None
+            if custom is not None:
+                return custom, DEFAULT_DUR["set"]
             node = self.resolve(action["target"])
             changes = {}
             if "role" in args:
