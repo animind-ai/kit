@@ -18,6 +18,8 @@
   点阵 `rotate`（整体转 90°）、`extend`（补满到 10）、`fade_col`（淡出一列）、`squares`（点放进方格）、`recolor`。示例 `scene-spec/examples/numbers.scene.yaml`。
 - **积木条形图** `mx/bars.py`（`block_bars`）：每列几块方块，`transfer` 把顶上的块跳到另一列（块数跟着变）、`add` 在空位长出新列、
   `level` 画一条几块高的虚线并写标签、`unlevel`、`recolor`，平均数"削峰填谷"用。示例 `scene-spec/examples/ep35.scene.yaml`。
+- **天平** `mx/balance.py`（`balance`）：两个托盘放砝码和一个未知盒子，按重量自动倾斜；`remove` / `add` 一边或两边拿走、放上砝码，
+  `label` 换盒子上的字，解方程"两边同时减"用。示例 `scene-spec/examples/ep19.scene.yaml`。
 - **墨线后端** `backends/moxian_backend.py` + `mx/`：对象树跨 beat 常驻，每个 beat 一条时间线；文字、组件、布局都在 `mx/` 里用墨线实现。动作按旁白句子和书签的时刻播放，画面跟不上旁白时打印 `CUE LATE`。
 - **Manim 后端** `backends/manim_backend.py` + `widgets/`：保留用于对照，每个 beat 一个 Scene。
 - **渲染** `render.py`：逐 beat 渲染，和旁白合成，拼成一支成片。

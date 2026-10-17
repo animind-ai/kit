@@ -394,6 +394,7 @@ REGISTRY: dict[str, type[Widget]] = {
     "ten_frame": __import__("animind_kit.mx.dots", fromlist=["TenFrame"]).TenFrame,  # 十格框在 dots.py（凑十）
     "dot_array": __import__("animind_kit.mx.dots", fromlist=["DotArray"]).DotArray,  # 点阵在 dots.py（转 90°、补满、淡出一列）
     "block_bars": __import__("animind_kit.mx.bars", fromlist=["BlockBars"]).BlockBars,  # 积木条形图在 bars.py（平均数削峰填谷）
+    "balance": __import__("animind_kit.mx.balance", fromlist=["Balance"]).Balance,  # 天平在 balance.py（解方程两边同时拿走）
 }
 
 
