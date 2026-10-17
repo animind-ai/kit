@@ -390,7 +390,9 @@ REGISTRY: dict[str, type[Widget]] = {
     "graph": __import__("animind_kit.mx.graph", fromlist=["Graph"]).Graph,  # 函数图像在 graph.py（割线、切线、放大）
     "number_line": __import__("animind_kit.mx.numberline", fromlist=["NumberLine"]).NumberLine,  # 数轴在 numberline.py（分数除法的跳跃）
     "dissect": __import__("animind_kit.mx.dissect", fromlist=["Dissect"]).Dissect,  # 剖分在 dissect.py（剪开、挪动、拼成新图形）
-    "area_grid": __import__("animind_kit.mx.grid", fromlist=["AreaGrid"]).AreaGrid,  # 格子正方形在 grid.py（分数乘法的交叠格）
+    "area_grid": __import__("animind_kit.mx.grid", fromlist=["AreaGrid"]).AreaGrid,  # 格子正方形在 grid.py（分数乘法的交叠格；rect 模式切长方形）
+    "ten_frame": __import__("animind_kit.mx.dots", fromlist=["TenFrame"]).TenFrame,  # 十格框在 dots.py（凑十）
+    "dot_array": __import__("animind_kit.mx.dots", fromlist=["DotArray"]).DotArray,  # 点阵在 dots.py（转 90°、补满、淡出一列）
 }
 
 
