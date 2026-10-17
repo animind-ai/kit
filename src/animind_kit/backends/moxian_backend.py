@@ -41,8 +41,8 @@ from scene_spec import params as spec_params
 from scene_spec import segments as spec_segments
 from scene_spec import selectors
 
-from .. import analysis, segments, timing
-from ..mx import layout, widgets
+from .. import analysis, lint, segments, timing
+from ..mx import layout, scan, widgets
 from ..mx.readout import Readout
 from ..mx.text import mmath, rich
 from ..regions import Region
@@ -130,6 +130,42 @@ class _FollowTimeline(Timeline):
         return changed
 
 
+@dataclass
+class _Sample:
+    time: float  # beat 内的成片时刻
+    source: str  # 这一刻是哪个动作刚做完：do[i] 动作 at=书签
+
+
+@dataclass
+class _Plan:
+    inner: _FollowTimeline
+    tl: segments.Warped
+    narration: Path | None
+    until: float
+    snapshots: list[tuple[float, dict[str, Node]]]
+    samples: list[_Sample]
+
+
+class _Sampling:
+    """包一层时间线：render_video 每 seek 到（越过）一个采样点，就在画这一帧之前做一次版式检查。"""
+
+    def __init__(self, tl, samples: list[_Sample], on_sample: Callable[[_Sample], object]):
+        self.tl, self.pending, self.on_sample = tl, list(samples), on_sample
+
+    @property
+    def end(self) -> float:
+        return self.tl.end
+
+    def frames(self, fps: int = 30, until: float | None = None):
+        return self.tl.frames(fps, until)
+
+    def seek(self, t: float) -> bool:
+        changed = self.tl.seek(t)
+        while self.pending and self.pending[0].time <= t + 1e-9:
+            self.on_sample(self.pending.pop(0))
+        return changed
+
+
 def wav_seconds(path: Path) -> float:
     with wave.open(str(path)) as handle:
         return handle.getnframes() / handle.getframerate()
@@ -170,6 +206,10 @@ class MoxianCompiler:
         self.followers: dict[int, tuple[Node, Node, Node, np.ndarray]] = {}
         self.ignore_pairs: set[frozenset[str]] = set()
         self.problems: list[str] = []
+        self.lint_config = lint.Config(min_font=float(doc.get("style", {}).get("min_font", lint.Config.min_font)))
+        self.allow = lint.Allow.from_doc(doc)
+        self.tracker = lint.Tracker()
+        self.offset = 0.0  # 当前 beat 在整支片子里的起点（秒）
         self.stats = {"beats": 0, "actions": 0, "cue_late": 0}
         self.seg = segments.SegmentState()  # 残影、常驻（跨 beat）
         self.freezes: list[segments.Freeze] = []  # 当前 beat 的子步定格
@@ -384,10 +424,15 @@ class MoxianCompiler:
 
     # ---------- beat ----------
 
-    def render_beat(self, beat: dict, clip: Path) -> float:
+    def _plan(self, beat: dict, clip: Path | None = None) -> _Plan:
+        """把一个 beat 编成时间线，算出时长和版式采样点（每批动作结束时、beat 末尾）。
+
+        clip 给了（真渲染）就在定格处给旁白插静音、写在 clip 旁边；不给（inspect）只估算时长。
+        """
         bt = timing.load(beat, self.audio_dir)
         tl_items: list[tuple[float, Animation]] = []
         snapshots: list[tuple[float, dict[str, Node]]] = [(-1.0, dict(self.visible))]  # 每批动作之后谁在画面上
+        ends: list[tuple[float, str]] = []  # (逻辑时刻, 来源)
         prev_end = 0.0
         actions = beat.get("do", [])
         i = 0
@@ -431,6 +476,8 @@ class MoxianCompiler:
             anims.sort(key=lambda a: not isinstance(a, (_Overlay, segments.GhostIn)))
             if anims:
                 tl_items.append((start, together(*anims)))
+            source = f"do[{i}] {head['act']}" + (f" at={head['at']}" if "at" in head else "")
+            ends.append((start + run_time, source))
             prev_end = start + run_time
             i = j
 
@@ -442,10 +489,14 @@ class MoxianCompiler:
         narration = self.audio_dir / f"{beat['id']}.wav" if self.audio_dir else None
         if narration is not None and not narration.exists():
             narration = None
-        if narration is not None and tl.freezes:  # 定格处给旁白插入等长静音
-            narration = segments.insert_silence(narration, clip.with_suffix(".narration.wav"), tl.freezes)
         frozen = sum(f.hold for f in tl.freezes)
-        spoken = (wav_seconds(narration) + 0.28) if narration else (bt.total + frozen + 0.5 if beat.get("say") else 0.0)
+        if narration is not None and tl.freezes and clip is not None:  # 定格处给旁白插入等长静音
+            narration = segments.insert_silence(narration, clip.with_suffix(".narration.wav"), tl.freezes)
+            spoken = wav_seconds(narration) + 0.28
+        elif narration is not None:
+            spoken = wav_seconds(narration) + frozen + 0.28
+        else:
+            spoken = bt.total + frozen + 0.5 if beat.get("say") else 0.0
         self.beat_info[beat["id"]] = {
             "cues": [{"start": segments.to_video(s.start, tl.freezes), "end": segments.to_video(s.end, tl.freezes),
                       "marks": {k: segments.to_video(v, tl.freezes) for k, v in s.marks.items()}} for s in bt.sentences],
@@ -455,24 +506,98 @@ class MoxianCompiler:
         # 暂停（预测、想一想）接在旁白之后：画面定住 hold 秒，音轨补同样长的静音
         hold = float(beat["pause"].get("hold", 2)) if "pause" in beat else 0.0
         until = max(spoken + hold, tl.end + 0.3, 1.0)
-        audio = self._padded_audio(narration, until, clip)
+        # 采样落在渲染真正会画的那一帧（不早于动作结束的第一帧），inspect 和 render 看到的是同一个画面
+        last = round(until * self.fps) / self.fps
+        samples = [_Sample(min(np.ceil(segments.to_video(t, tl.freezes) * self.fps - 1e-6) / self.fps, last), src)
+                   for t, src in ends]
+        samples.append(_Sample(last, "结束"))
+        return _Plan(inner, tl, narration, until, snapshots, sorted(samples, key=lambda s: s.time))
+
+    def render_beat(self, beat: dict, clip: Path) -> float:
+        plan = self._plan(beat, clip)
+        audio = self._padded_audio(plan.narration, plan.until, clip)
         self._camera_exempt()
         renderer = SkiaRenderer(self.width, self.height, background=self.t.BG, camera=self.camera)
-        render_video(self.root, tl, clip, renderer, fps=self.fps, audio=audio, until=until, log=lambda *_: None)
+        sampled = _Sampling(plan.tl, plan.samples, lambda s: self.lint_at(beat["id"], s))
+        render_video(self.root, sampled, clip, renderer, fps=self.fps, audio=audio, until=plan.until, log=lambda *_: None)
         self.stats["beats"] += 1
+        self._end_checks(beat["id"], plan)
+        return plan.until
+
+    def _end_checks(self, beat_id: str, plan: _Plan) -> None:
         pinned = {k for k, v in self.objects.items() if v.definition.get("pin")} | self.seg.pinned
         found = layout.check(self.visible, self.ignore_pairs, pinned)
-        if inner.schedules:  # 参数采样按逻辑时刻，用定格之前的时间线
-            found += self._param_layout(inner, snapshots, pinned, {p.split("（")[0] for p in found})
+        if plan.inner.schedules:  # 参数采样按逻辑时刻，用定格之前的时间线
+            found += self._param_layout(plan.inner, plan.snapshots, pinned, {p.split("（")[0] for p in found})
         for problem in found:
-            self.problems.append(f"{beat['id']}: {problem}")
-            self.log(f"LAYOUT {beat['id']}: {problem}")
+            self.problems.append(f"{beat_id}: {problem}")
+            self.log(f"LAYOUT {beat_id}: {problem}")
         # 组件内部的结束状态检查（例如 dissect 的标签互相压住）；移动途中的重叠不算
         for k in [k for k in self.visible if k in self.objects]:
             for problem in getattr(self.objects[k].widget, "end_problems", list)():
-                self.problems.append(f"{beat['id']}: {problem}")
-                self.log(f"LAYOUT {beat['id']}: {problem}")
-        return until
+                self.problems.append(f"{beat_id}: {problem}")
+                self.log(f"LAYOUT {beat_id}: {problem}")
+
+    # ---------- 字形级版式检查（inspect） ----------
+
+    def labels(self) -> dict[int, scan.Label]:
+        """对象树里的节点 → 报告里的名字。叠加层挂在根上或目标的父节点下，各自单独标出。"""
+        out: dict[int, scan.Label] = {}
+        for k, b in self.objects.items():
+            out[id(b.node)] = scan.Label(k, k)
+            for name, node in b.spans.items():
+                out[id(node)] = scan.Label(f"{k}#{name}", k)
+        for k, frame in self.focus_boxes.items():
+            out[id(frame)] = scan.Label(f"focus({k})", k, "focus")
+        for sel, pad in self.marks.items():
+            out[id(pad)] = scan.Label(f"mark({sel})", selectors.parse(sel).obj, "mark")
+        for act, sel, deco in self.decorations:
+            out[id(deco)] = scan.Label(f"{act}({sel})", selectors.parse(sel).obj, act)
+        for obj, ghosts in self.seg.ghosts.items():
+            for name, holder in ghosts:
+                out[id(holder)] = scan.Label(name, obj, "ghost")
+        return out
+
+    def lint_at(self, beat_id: str, sample: _Sample) -> list[tuple[int, lint.Problem]]:
+        things = scan.scan(self.root, self.labels(), self.camera, self.lint_config.min_opacity)
+        problems = lint.check(things, self.lint_config, self.allow, self.ignore_pairs, framed=not self.camera.is_identity())
+        moment = lint.Moment(beat_id, sample.time, sample.source, self.offset + sample.time)
+        return self.tracker.see(moment, problems)
+
+    def _report_lint(self) -> None:
+        """整支片子检查完再报：同一个问题跨 beat 合并成一条，带完整的时间范围。"""
+        for f in self.tracker.findings:
+            self.problems.append(f.line())
+            self.log(f"LINT {f.line()}")
+
+    def inspect(self, only: set[str] | None = None, sheets: Path | None = None) -> list[lint.Finding]:
+        """不编码视频：逐 beat 编时间线，跳到每个采样点做字形级检查；给了 sheets 就写分镜图。
+
+        only 之外的 beat 也要编、要播到末尾（后面的 beat 从它们的结束状态出发），只是不检查、不出图。
+        """
+        from .. import storyboard
+
+        for beat in self.doc["beats"]:
+            plan = self._plan(beat)
+            self._camera_exempt()
+            chosen = only is None or beat["id"] in only
+            cells: list[storyboard.Cell] = []
+            renderer = SkiaRenderer(storyboard.CELL_W, storyboard.CELL_H, background=self.t.BG, camera=self.camera)
+            for k, sample in enumerate(plan.samples if chosen else []):
+                plan.tl.seek(sample.time)
+                marks = self.lint_at(beat["id"], sample)
+                if sheets is not None:
+                    caption = f"#{k} {beat['id']} t={sample.time:.2f}s  {sample.source}"
+                    cells.append(storyboard.Cell(renderer.render(self.root), caption, marks))
+            plan.tl.seek(plan.until)
+            if chosen:
+                self._end_checks(beat["id"], plan)
+            if cells:
+                storyboard.write_sheets(cells, sheets, beat["id"])
+            self.offset += round(plan.until * self.fps) / self.fps + 1 / self.fps
+            self.stats["beats"] += 1
+        self._report_lint()
+        return self.tracker.findings
 
     def _param_layout(self, tl: Timeline, snapshots: list[tuple[float, dict[str, Node]]], pinned: set[str],
                       seen: set[str]) -> list[str]:
@@ -798,7 +923,9 @@ class MoxianCompiler:
             clip = parts / f"{beat['id']}.mp4"
             seconds = self.render_beat(beat, clip)
             clips.append(clip)
+            self.offset += probe_seconds(clip)
             self.log(f"muxed {beat['id']} {seconds:.1f}s")
+        self._report_lint()
         playlist = parts / "list.txt"
         playlist.write_text("".join(f"file '{c.resolve()}'\n" for c in clips), encoding="utf-8")
         out.parent.mkdir(parents=True, exist_ok=True)

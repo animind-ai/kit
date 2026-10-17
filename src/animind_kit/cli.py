@@ -1,4 +1,7 @@
-"""命令行：animind-kit render 场景文件 --out 成片 [--audio 目录] [--quality l|m|h]"""
+"""命令行：
+    animind-kit render 场景文件 --out 成片 [--audio 目录] [--quality l|m|h]
+    animind-kit inspect 场景文件 [--beat X] [--out 分镜图目录] [--audio 目录]
+"""
 
 from __future__ import annotations
 
@@ -24,6 +27,13 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--out", type=Path, required=True, help="输出目录")
     c.add_argument("--audio", type=Path)
     c.add_argument("--quality", choices=["l", "m", "h"], default="l")
+    i = sub.add_parser("inspect", help="不编码视频，逐批动作检查字形级版式问题并出分镜图（墨线后端）")
+    i.add_argument("spec", type=Path)
+    i.add_argument("--beat", action="append", help="只检查这个 beat（可重复）；其余 beat 照样推演但不检查")
+    i.add_argument("--out", type=Path, help="分镜图目录，默认 build/inspect/<场景名>")
+    i.add_argument("--no-sheets", action="store_true", help="只打印问题，不出分镜图")
+    i.add_argument("--audio", type=Path, help="旁白目录：用真实时长（没有就按字数估算）")
+    i.add_argument("--quality", choices=["l", "m", "h"], default="m", help="和 render 用同一档，采样才落在同一帧")
     g = sub.add_parser("regress", help="截图回归：渲染示例末帧，和 tests/baseline 比对")
     g.add_argument("--update", action="store_true", help="用当前结果覆盖基准图")
     args = parser.parse_args(argv)
@@ -42,6 +52,14 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(f"截图回归：{len(results) - len(bad) - len(new)} 段一致，{len(bad)} 段有变化，{len(new)} 段没有基准图")
         return 1 if bad else 0
+
+    if args.command == "inspect":
+        from .render import inspect
+
+        name = args.spec.name.removesuffix(".yaml").removesuffix(".scene")
+        out = None if args.no_sheets else (args.out or Path("build/inspect") / name)
+        problems = inspect(args.spec, args.audio, out, args.beat, args.quality)
+        return 1 if problems else 0
 
     if args.command == "compare":
         from .compare import compare

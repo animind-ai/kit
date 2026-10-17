@@ -138,6 +138,30 @@ def beat_info_estimated(doc: dict, audio_dir: Path | None) -> dict:
     return out
 
 
+def inspect(spec: Path, audio_dir: Path | None, out_dir: Path | None, beats: list[str] | None = None,
+            quality: str = "m", log=print) -> list:
+    """不编码视频的快速版式检查（墨线后端）：打印问题列表；给了 out_dir 就写分镜图。
+
+    采样点和 render 相同（每批动作结束后的第一帧、beat 末帧），quality 只决定帧率（采样落在哪一帧）。
+    """
+    from .backends.moxian_backend import MoxianCompiler
+
+    doc = load_file(spec)
+    report = check(doc)
+    for issue in report.issues:
+        log(str(issue))
+    if not report.ok:
+        raise SystemExit("scene-spec 检查未通过")
+    unknown = set(beats or []) - {b["id"] for b in doc["beats"]}
+    if unknown:
+        raise SystemExit(f"没有这些 beat：{', '.join(sorted(unknown))}")
+    theme = load_theme(doc.get("style", {}).get("theme", "paper"))
+    compiler = MoxianCompiler(doc, theme, audio_dir, log, quality)
+    compiler.inspect(set(beats) if beats else None, out_dir)
+    log(f"inspect {spec.name}：版式问题 {len(compiler.problems)} 条" + (f"，分镜图在 {out_dir}" if out_dir else ""))
+    return compiler.problems
+
+
 def render(spec: Path, out: Path, audio_dir: Path | None, quality: str = "l", only: list[str] | None = None, log=print,
            backend: str = "manim", burn_subtitles: bool = False, theme_name: str | None = None) -> dict:
     doc = load_file(spec)

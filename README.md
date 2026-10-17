@@ -45,6 +45,24 @@ uv run animind-kit regress            # 有变化时退出码 1
 uv run animind-kit regress --update   # 确认画面变化是有意的之后，更新基准图
 ```
 
+### 版式检查：inspect
+
+改版式时先跑这个，不编码视频，一支片子一两秒：
+
+```bash
+uv run animind-kit inspect ../scene-spec/examples/ep30.scene.yaml            # 分镜图写到 build/inspect/ep30/
+uv run animind-kit inspect ../scene-spec/examples/s67-p02.scene.yaml --audio /path/to/p02/audio --beat Guess
+uv run animind-kit inspect ../scene-spec/examples/ep22.scene.yaml --no-sheets   # 只打印问题
+```
+
+在每批动作结束后的第一帧和每个 beat 的末帧看每个字（墨线后端），报五类问题：`small`（字号低于 `style.min_font`，没写时 16px，按 1080p 算）、`cross`（线或填充的边穿过字，同一对象内部也算）、`covered`（不透明填充盖住字）、`overlap`（两段文字压在一起）、`clip`（伸出画面）。每条问题带编号、beat、时间范围（beat 内的成片时刻和整支片子里的大致时刻）、来源动作（`do[4] focus at=s2@b3`）和涉及的对象，例如：
+
+```
+[5] Zoom t=3.9s（片中 83.0s） do[5] camera at=s1@z  cross  cap10 × g：g 的线穿过文字「放大 10 倍：弯曲已经不太明显」
+```
+
+同一个问题跨好几个 beat 时合并成一条。分镜图每张 6 格、按时间排，问题用红框圈出、标上同样的编号（虚线框是另一方）。`render` 跑的是同一套检查、同样的采样帧，问题列在"版式问题"里。确实是故意的情况，在对象上写 `allow`（见 scene-spec 设计稿 §6.4）。有问题时退出码 1。
+
 `--audio` 目录里要有每个 beat 的 `<beat>.wav` 和 `<beat>.timing.json`（voice 流水线的输出格式；没有音频的 beat 按每个汉字 0.22 秒估算时长）。`--quality` 取 `l` / `m` / `h`。
 
 ### 分段播放、字幕和章节文件
