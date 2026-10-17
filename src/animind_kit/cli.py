@@ -16,6 +16,8 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--audio", type=Path, help="旁白目录：<beat>.wav 与 <beat>.timing.json")
     r.add_argument("--quality", choices=["l", "m", "h"], default="l")
     r.add_argument("--backend", choices=["manim", "moxian"], default="moxian", help="渲染引擎，默认墨线")
+    r.add_argument("--burn-subtitles", action="store_true",
+                   help="另出一份把字幕烧进画面的 <名>.burned.mp4（给不支持软字幕的平台）；默认只出软字幕")
     c = sub.add_parser("compare", help="两个后端各渲染一遍并拼出每个 beat 的末帧对照图")
     c.add_argument("spec", type=Path)
     c.add_argument("--out", type=Path, required=True, help="输出目录")
@@ -48,7 +50,8 @@ def main(argv: list[str] | None = None) -> int:
 
     from .render import render
 
-    summary = render(args.spec, args.out, args.audio, args.quality, backend=args.backend)
+    summary = render(args.spec, args.out, args.audio, args.quality, backend=args.backend,
+                     burn_subtitles=args.burn_subtitles)
     return 1 if summary["layout_problems"] else 0
 
 

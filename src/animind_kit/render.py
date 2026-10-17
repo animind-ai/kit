@@ -43,12 +43,14 @@ def chapters_path(out: Path) -> Path:
     return out.with_suffix(".chapters.json")
 
 
-def chapters(doc: dict, clip_seconds: list[float], video: str = "") -> dict:
+def chapters(doc: dict, clip_seconds: list[float], video: str = "", beat_info: dict | None = None) -> dict:
     """播放器用的章节表：每个 beat 一章，起止时间按各段实际时长累加（拼接用 -c copy，成片时间轴就是各段首尾相接）。
 
     暂停点（预测、想一想、分段）在这一段末尾画面定住的那 hold 秒开始：旁白之后补的 hold 秒总在段尾。
     style.segmented 为真时每个 beat 末尾都是分段点。
+    beat_info（墨线后端给出）里有每段的子步定格（step），写成章节的 steps，并汇总进顶层 stops。
     """
+    beat_info = beat_info or {}
     style = doc.get("style", {})
     meta = doc.get("meta", {})
     segmented = bool(style.get("segmented", False))
@@ -68,20 +70,76 @@ def chapters(doc: dict, clip_seconds: list[float], video: str = "") -> dict:
                 pause["app_item"] = p["app_item"]
             chapter["pause"] = pause
         chapter["segment_end"] = segmented or beat.get("pause", {}).get("type") == "segment"
+        chapter["steps"] = [{"time": round(start + st["time"], 3), "hold": st["hold"],
+                             "resume": round(start + st["time"] + st["hold"], 3), "at": st["at"]}
+                            for st in beat_info.get(beat["id"], {}).get("steps", [])]
         out.append(chapter)
         t = end
     return {"id": meta.get("id"), "title": meta.get("title"), "video": video, "duration": round(t, 3),
-            "segmented": segmented, "chapters": out}
+            "segmented": segmented, "chapters": out, "stops": stops(out)}
 
 
-def write_chapters(doc: dict, clip_seconds: list[float], out: Path) -> Path:
+def stops(chapters_list: list[dict]) -> list[dict]:
+    """所有停顿点按时间排好：子步定格（视频里已经定住，连续播放时可跳过 time..resume）、
+    预测 / 想一想暂停（播放器在 time 暂停，带题目引用 app_item）、分段点（beat 末尾，分段模式下播放器暂停）。"""
+    out = []
+    for c in chapters_list:
+        for st in c["steps"]:
+            out.append({"time": st["time"], "kind": "step", "beat": c["id"], "hold": st["hold"], "resume": st["resume"]})
+        if "pause" in c:
+            p = c["pause"]
+            item = {"time": p["time"], "kind": p["type"], "beat": c["id"], "hold": p["hold"], "resume": c["end"]}
+            if p.get("prompt"):
+                item["prompt"] = p["prompt"]
+            if "app_item" in p:
+                item["app_item"] = p["app_item"]
+            out.append(item)
+        if c["segment_end"]:
+            out.append({"time": c["end"], "kind": "segment_end", "beat": c["id"]})
+    return sorted(out, key=lambda x: x["time"])
+
+
+def write_chapters(doc: dict, clip_seconds: list[float], out: Path, beat_info: dict | None = None,
+                   extra: dict | None = None) -> Path:
     path = chapters_path(out)
-    path.write_text(json.dumps(chapters(doc, clip_seconds, out.name), ensure_ascii=False, indent=2), encoding="utf-8")
+    data = chapters(doc, clip_seconds, out.name, beat_info)
+    data.update(extra or {})
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     return path
 
 
+def export_subtitles(doc: dict, out: Path, clip_seconds: list[float], beat_info: dict, theme, burn: bool, log) -> dict:
+    """style.subtitles 不是 none 时：写 <名>.vtt / <名>.srt，封装成 mp4 的软字幕轨；burn 时另出 <名>.burned.mp4。"""
+    from . import subtitles
+
+    if doc.get("style", {}).get("subtitles", "soft") == "none":
+        return {}
+    starts = [sum(clip_seconds[:i]) for i in range(len(clip_seconds))]
+    cues = subtitles.build(doc, starts, beat_info)
+    vtt, srt = subtitles.write(cues, out)
+    subtitles.mux_soft(out, srt)
+    info = {"vtt": vtt.name, "srt": srt.name, "embedded": "mov_text", "cues": len(cues)}
+    if burn:
+        burned = out.with_name(f"{out.stem}.burned.mp4")
+        subtitles.burn(out, cues, burned, theme.BG, theme.FG, out.parent / f".build-{out.stem}-subtitles")
+        info["burned"] = burned.name
+    log(f"字幕 {len(cues)} 条 → {vtt.name}、{srt.name}（已封装为软字幕轨）" + ("，烧录副本 " + info["burned"] if burn else ""))
+    return info
+
+
+def beat_info_estimated(doc: dict, audio_dir: Path | None) -> dict:
+    """没有子步定格的后端（Manim）：句子时刻直接取 timing.json。"""
+    from . import timing
+
+    out = {}
+    for beat in doc["beats"]:
+        bt = timing.load(beat, audio_dir)
+        out[beat["id"]] = {"cues": [{"start": s.start, "end": s.end, "marks": s.marks} for s in bt.sentences], "steps": []}
+    return out
+
+
 def render(spec: Path, out: Path, audio_dir: Path | None, quality: str = "l", only: list[str] | None = None, log=print,
-           backend: str = "manim") -> dict:
+           backend: str = "manim", burn_subtitles: bool = False) -> dict:
     doc = load_file(spec)
     report = check(doc)
     for issue in report.issues:
@@ -97,7 +155,10 @@ def render(spec: Path, out: Path, audio_dir: Path | None, quality: str = "l", on
 
         summary = MoxianCompiler(doc, theme, audio_dir, log, quality).render_all(out, build)
         build.mkdir(parents=True, exist_ok=True)
-        summary["chapters"] = str(write_chapters(doc, summary["clip_seconds"], out))
+        info = summary.pop("beat_info")
+        subs = export_subtitles(doc, out, summary["clip_seconds"], info, theme, burn_subtitles, log)
+        summary["subtitles"] = subs
+        summary["chapters"] = str(write_chapters(doc, summary["clip_seconds"], out, info, {"subtitles": subs}))
         (build / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
         log(f"wrote {out} {summary['seconds']}s；版式问题 {len(summary['layout_problems'])} 条")
         return summary
@@ -153,7 +214,10 @@ def render(spec: Path, out: Path, audio_dir: Path | None, quality: str = "l", on
     out.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", str(playlist), "-c", "copy", str(out)], check=True)
     summary = {"out": str(out), "seconds": round(probe_seconds(out), 1), "beats": names, "layout_problems": compiler.problems}
-    summary["chapters"] = str(write_chapters(doc, [probe_seconds(c) for c in clips], out))
+    clip_seconds = [probe_seconds(c) for c in clips]
+    info = beat_info_estimated(doc, audio_dir)
+    summary["subtitles"] = export_subtitles(doc, out, clip_seconds, info, theme, burn_subtitles, log)
+    summary["chapters"] = str(write_chapters(doc, clip_seconds, out, info, {"subtitles": summary["subtitles"]}))
     (build / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     log(f"wrote {out} {summary['seconds']}s；版式问题 {len(compiler.problems)} 条")
     return summary
