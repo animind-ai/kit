@@ -26,6 +26,19 @@ PX = FRAME_HEIGHT / 1080  # 1080p 下一个像素的画面长度
 FRAME: Box = (-FRAME_WIDTH / 2, -FRAME_HEIGHT / 2, FRAME_WIDTH / 2, FRAME_HEIGHT / 2)
 KINDS = ("small", "cross", "covered", "overlap", "clip")
 
+# 几类文字的字号下限，按成片 720p 的像素写（2026-10-17 定的默认值：手机上看得清）。
+# 组件和区域在节点上标 font_floor = 类别名，scan 把它带到字形上，small 检查按 max(min_font, 下限) 判。
+FLOORS_720 = {
+    "label": 36.0,  # 数轴上的数字和分数标注（整数刻度、分数刻度、点的标注）
+    "side": 26.0,  # 右侧栏里的文字
+    "practice": 26.0,  # 「练一练」/ 想一想框（think_box）
+}
+
+
+def floors(scale: float = 1.0) -> dict[str, float]:
+    """各类文字的字号下限，换成渲染坐标（1080p 像素）。scale：成片里画面的缩放（烧录字幕时画面缩小，下限相应抬高）。"""
+    return {k: v * 1.5 / scale for k, v in FLOORS_720.items()}
+
 
 @dataclass
 class Config:
@@ -35,6 +48,7 @@ class Config:
     clip: float = 2.0  # 伸出画面多少像素算裁掉
     min_opacity: float = 0.15  # 更淡的东西看不清，不检查
     hide_fill: float = 0.9  # 不透明度达到它的填充会把画在它下面的线挡住
+    floors: dict[str, float] = field(default_factory=dict)  # font_floor 类别 → 字号下限（1080p 像素），见 floors()
 
 
 @dataclass
@@ -55,6 +69,7 @@ class Thing:
     stroked: bool = False
     fill: float = 0.0  # 填充的实际不透明度
     follows: bool = True  # 跟着镜头走（不是钉住的题卡、底部胶囊）
+    floor: str | None = None  # 文字：字号下限的类别（FLOORS_720 的键），节点上的 font_floor
 
 
 @dataclass
@@ -223,10 +238,12 @@ def check(things: list[Thing], config: Config | None = None, allow: Allow | None
     # small：按文字段看字号
     for glyphs in runs.values():
         g = glyphs[0]
-        if g.em is None or g.em >= cfg.min_font or allow.flag(g.obj, "small"):
+        limit = max(cfg.min_font, cfg.floors.get(g.floor, 0.0)) if g.floor else cfg.min_font
+        if g.em is None or g.em >= limit - 0.05 or allow.flag(g.obj, "small"):
             continue
+        kind = f"（{g.floor} 下限）" if g.floor and limit > cfg.min_font else ""
         out.append(Problem("small", g.owner, None,
-                           f"文字「{_snippet(g.text)}」字号 {g.em:.1f}px（1080p），低于 {cfg.min_font:g}px",
+                           f"文字「{_snippet(g.text)}」字号 {g.em:.1f}px（1080p），低于 {limit:.4g}px{kind}",
                            union(t.box for t in glyphs), text=g.text))
 
     # clip：按所属对象合并

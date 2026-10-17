@@ -22,6 +22,10 @@
 - bar：在轴下方画一条和 0..end 等长的分数条，每个单位分成 parts 格；fill：给 cells（"a:b"，从 0 数）涂 role 色；
   group：从左往右每 size 格框成一组，依次出现，框上标 1、2、3…
 
+标注字号：整数刻度、分数刻度、点的标注和剩余段的分数都用 label_size，分数一律写成 \\dfrac（分子分母和整数一样大，
+不是缩小的上下标）。这些节点标了 font_floor = "label"；后端排版后按组件的实际缩放把 label_size 抬到字号下限
+（lint.FLOORS_720["label"]，成片 720p 约 36px），所以数轴被缩小时标注不跟着变小。
+
 所有位置都用 fractions.Fraction 做精确运算（跳几次、剩多少、刻度落在哪），只在画图时才换成浮点。
 
 暴露的子元素（scene-spec 里登记的长度和这里一致）：
@@ -61,6 +65,11 @@ def frac(value: Number) -> Fraction:
     if isinstance(value, bool) or isinstance(value, float):
         raise ValueError(f"数轴上的数要写成整数或分数字符串（例如 \"2/3\"），不要写小数：{value!r}")
     return Fraction(str(value).replace(" ", ""))
+
+
+def display(src: str) -> str:
+    """标注里的 \\frac 换成 \\dfrac：行内分数的分子分母是缩小的上下标，在数轴上太小。"""
+    return src.replace("\\frac", "\\dfrac")
 
 
 def tex(value: Fraction) -> str:
@@ -274,12 +283,13 @@ class NumberLine(Widget):
     UNIT = 1.9  # 一个单位的长度（画面单位，排版前）
     OVERSHOOT = 0.9  # 轴在终点之后多画出去的一段（带箭头）
     MAJOR, MINOR = 0.2, 0.12  # 刻度半高
-    LABEL_Y = -0.52
-    FRAC_Y = -0.72
-    LABEL, FRAC, COUNT = 34, 28, 30
+    LABEL = 40  # 标注的默认字号（kit 字号，×1.4 是 1080p 像素）；opts["label_size"] 覆盖（后端按字号下限抬）
+    COUNT = 32  # 跳跃弧顶的计数、分组框下的序号
+    LABEL_GAP = 0.1  # 刻度下端到标注上沿
     ARC_BASE = 0.06
     ARC_MAX = 0.85
-    BAR_GAP, BAR_H = 0.5, 0.5  # 分数条在分数标注下方多远、多高
+    BAR_GAP, BAR_H = 0.3, 0.5  # 分数条在标注下方多远、多高
+    label_floor = "label"  # 后端据此把 label_size 抬到这一类的字号下限
 
     def build(self) -> Built:
         d, t = self.definition, self.theme
@@ -299,6 +309,15 @@ class NumberLine(Widget):
         self.length: Fraction | None = None
         self.jump_set: Group | None = None
         self.points_used = 0
+        self.acted = False  # 做过动作之后后端就不再重建它（重建会丢掉动作留下的状态）
+        self.label_size = float(self.opts.get("label_size", self.LABEL))
+        self.label_top = -(self.MAJOR + self.LABEL_GAP)
+        self.frac_h = mmath(r"\dfrac{8}{8}", self.label_size, t.FG).height
+        self.int_h = mmath("8", self.label_size, t.FG).height
+        self.count_h = mmath("8", self.COUNT, t.FG).height
+        # 整数标注：有分数标注时和分数的中线对齐，没有时贴着刻度
+        self.int_cy = self.label_top - (self.frac_h if self.fractions else self.int_h) / 2
+        self.label_bottom = self.label_top - (self.frac_h if self.fractions else self.int_h)
 
         node = Group(name=self.obj_id)
         U = self.UNIT
@@ -307,8 +326,10 @@ class NumberLine(Widget):
         tip = PathNode(path=line(x_end - 0.16, 0.1, x_end, 0.0).extend(line(x_end, 0.0, x_end - 0.16, -0.1)),
                        style=Style(stroke=t.FG, stroke_width=3))
         # 看不见的占位框：跳跃弧和计数、分数标注都在里面，排版时整个组件的大小不随动作变化
-        top = self.ARC_MAX + self.ARC_BASE + 0.7
-        bottom = 1.15 + (self.BAR_GAP + self.BAR_H + 0.55 if d.get("bars") else 0.0)
+        top = max(self.ARC_MAX + self.ARC_BASE + 0.1 + self.count_h, self.MAJOR + 0.08 + self.frac_h) + 0.1
+        bottom = -self.label_bottom + 0.1
+        if d.get("bars"):
+            bottom += self.BAR_GAP + self.BAR_H + 0.1 + self.count_h
         reserve = PathNode(path=rect(x_end + 0.5, top + bottom).transformed(T.translate((x_end - 0.5) / 2, (top - bottom) / 2)),
                            style=Style(opacity=0.0))
         self.bar = PathNode(path=rect(1e-4, 0.16), style=Style(fill=t.HL, fill_opacity=0.55, opacity=0.0), z=-1)
@@ -325,7 +346,7 @@ class NumberLine(Widget):
             x = k * U
             tick = PathNode(path=line(0.0, -self.MAJOR, 0.0, self.MAJOR), style=Style(stroke=t.FG, stroke_width=3))
             tick.matrix = T.translate(x, 0.0)
-            label = mmath(str(self.start + k), self.LABEL, t.FG).move_to([x, self.LABEL_Y])
+            label = self._label(str(self.start + k), t.FG).move_to([x, self.int_cy])
             self.major.append(tick)
             self.labels.append(label)
 
@@ -385,10 +406,17 @@ class NumberLine(Widget):
             return []
         out = []
         for j in range(1, parts):
-            lab = mmath(rf"\frac{{{j}}}{{{parts}}}", self.FRAC, self.theme.FG)
-            lab.move_to([self.x(self.start + Fraction(j, parts)), self.FRAC_Y])
+            lab = self._label(rf"\frac{{{j}}}{{{parts}}}", self.theme.FG)
+            lab.move_to([self.x(self.start + Fraction(j, parts)), 0.0])
+            lab.shift([0.0, self.label_top - lab.bbox().y1])
             out.append(lab)
         return out
+
+    def _label(self, src: str, color: str) -> Node:
+        """数轴标注（整数、分数、点的标注）：\\dfrac、label_size 字号，标上字号下限类别。"""
+        lab = mmath(display(src), self.label_size, color)
+        lab.font_floor = self.label_floor
+        return lab
 
     def arc_height(self, length: Fraction) -> float:
         w = float(length) * self.UNIT
@@ -421,6 +449,7 @@ class NumberLine(Widget):
     # ---- 动作 ----
 
     def action(self, act: str, args: dict) -> list[Animation]:
+        self.acted = True
         if act == "jump":
             return [self._jump(frac(args["length"]), args.get("count"), frac(args.get("from", self.start)),
                                bool(args.get("keep", False)), args.get("role"), bool(args.get("numbers", True)))]
@@ -478,7 +507,8 @@ class NumberLine(Widget):
             head_node = PathNode(path=self.arrow_head(a, b), style=Style(stroke=ink, stroke_width=4, opacity=0.0))
             num = mmath(str(i + 1), self.COUNT, t.ink(num_role)) if numbers else Group()
             if numbers:
-                num.move_to([(self.x(a) + self.x(b)) / 2, self.ARC_BASE + h + 0.3])
+                num.move_to([(self.x(a) + self.x(b)) / 2, 0.0])
+                num.shift([0.0, self.ARC_BASE + h + 0.08 - num.bbox().y0])
                 num.set_style(opacity=0.0)
             jump = Group(arc, head_node, name=f"jump{i}")
             jump_set.add(jump, num)
@@ -504,8 +534,9 @@ class NumberLine(Widget):
         ghost = PathNode(path=self.arc(a, full, h), style=Style(stroke=t.DIM, stroke_width=3, opacity=0.0))
         piece = PathNode(path=self.arc(a, b, h * 0.75), style=Style(stroke=t.HL, stroke_width=5, opacity=0.0))
         share = self.left / self.length  # 剩下的是一跳的几分之几
-        label = mmath(tex(share), self.COUNT, t.HL_INK)
-        label.move_to([(self.x(a) + self.x(b)) / 2, self.ARC_BASE + h * 0.75 + 0.42])
+        label = self._label(tex(share), t.HL_INK)
+        label.move_to([(self.x(a) + self.x(b)) / 2, 0.0])
+        label.shift([0.0, self.ARC_BASE + h * 0.75 + 0.1 - label.bbox().y0])
         label.set_style(opacity=0.0)
         self.rest_group.children.clear()
         self.rest_piece.children.clear()
@@ -570,7 +601,8 @@ class NumberLine(Widget):
         dot.matrix = T.translate(self.x(at), 0.0)
         slot.add(dot)
         if label:
-            lab = mmath(label, self.COUNT, t.ink(role or "HL")).move_to([self.x(at), -self.LABEL_Y + 0.05])
+            lab = self._label(label, t.ink(role or "HL")).move_to([self.x(at), 0.0])
+            lab.shift([0.0, self.MAJOR + 0.08 - lab.bbox().y0])
             slot.add(lab)
         slot.set_style(opacity=0.0)
         return _FadeTo(slot, 1.0)
@@ -591,7 +623,7 @@ class NumberLine(Widget):
     # ---- 分数条（轴下方，和 start..end 等长）----
 
     def _strip_y(self) -> float:
-        return self.FRAC_Y - self.BAR_GAP - self.BAR_H / 2
+        return self.label_bottom - self.BAR_GAP - self.BAR_H / 2
 
     def _strip(self, parts: int) -> Animation:
         if not self.definition.get("bars"):
@@ -636,7 +668,8 @@ class NumberLine(Widget):
             x0, x1 = g * size * w, (g + 1) * size * w
             box = PathNode(path=rect(x1 - x0 - 0.08, self.BAR_H + 0.16).transformed(T.translate((x0 + x1) / 2, y)),
                            style=Style(stroke=t.HL_INK, stroke_width=4, opacity=0.0))
-            num = mmath(str(g + 1), self.FRAC, t.HL_INK).move_to([(x0 + x1) / 2, y - self.BAR_H / 2 - 0.3])
+            num = mmath(str(g + 1), self.COUNT, t.HL_INK).move_to([(x0 + x1) / 2, 0.0])
+            num.shift([0.0, y - self.BAR_H / 2 - 0.12 - num.bbox().y1])
             num.set_style(opacity=0.0)
             self.groups.add(box, num)
             steps.append([_FadeTo(box, 1.0), _FadeTo(num, 1.0)])

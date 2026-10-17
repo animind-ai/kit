@@ -1,4 +1,4 @@
-"""软字幕：显示文本、公式转 Unicode、切条、时刻、文件格式、封装进 mp4。"""
+"""字幕：显示文本、公式转 Unicode、切条、时刻、双语、文件格式、烧录（默认）和软字幕轨。"""
 
 import json
 import shutil
@@ -75,6 +75,33 @@ def test_files_format():
     assert srt.startswith("1\n00:00:00,300 --> 00:00:02,000\n六除以三分之二\n\n2\n01:01:01,500")
 
 
+def test_english_pieces_are_balanced_and_complete():
+    en = "Plenty of people say bigger, for sure, because multiplying makes things bigger."
+    assert sub.en_pieces(en, 1) == [en]
+    pieces = sub.en_pieces(en, 3)
+    assert " ".join(pieces) == en and 1 < len(pieces) <= 3
+    assert pieces[0].endswith(",")  # 优先在标点后切
+    long = " ".join(["word"] * 40)
+    assert all(len(p) <= sub.EN_MAX for p in sub.en_pieces(long, 5))
+
+
+def test_bilingual_cues_carry_english_under_each_chinese_line():
+    text = "很多人觉得一定更大，{@m}因为乘法会让数变大。"
+    en = "Plenty of people say bigger, for sure, because multiplying makes things bigger."
+    cues = sub.sentence_cues(text, 0.0, 4.0, {"m": 1.8}, en)
+    assert len(cues) == 2 and all(c.en for c in cues)
+    assert " ".join(dict.fromkeys(c.en for c in cues)) == en  # 英文不丢字、按顺序
+    assert sub.to_srt(cues).split("\n")[2:4] == [cues[0].text, cues[0].en]
+
+
+def test_mode_defaults_to_burned():
+    assert sub.mode({}) == "burned" and sub.mode({"style": {"subtitles": "soft"}}) == "soft"
+    assert sub.mode({"style": {"subtitles": "soft"}}, "none") == "none"
+    assert sub.picture_scale("burned") == pytest.approx(1 - sub.BAND) and sub.picture_scale("soft") == 1.0
+    with pytest.raises(ValueError):
+        sub.mode({"style": {"subtitles": "loud"}})
+
+
 def test_build_offsets_each_beat():
     doc = {"beats": [{"id": "A", "say": [{"text": "第一句。"}]}, {"id": "B", "say": [{"text": "第二句。"}]}]}
     info = {"A": {"cues": [{"start": 0.3, "end": 1.0, "marks": {}}]}, "B": {"cues": [{"start": 0.3, "end": 1.2, "marks": {}}]}}
@@ -119,8 +146,8 @@ def test_render_exports_soft_subtitles(tmp_path):
     burned = tmp_path / "tiny.burned.mp4"
     assert burned.exists() and "subtitle:mov_text" not in _streams(burned)
     ch = json.loads((tmp_path / "tiny.chapters.json").read_text(encoding="utf-8"))
-    assert ch["subtitles"] == {"vtt": "tiny.vtt", "srt": "tiny.srt", "embedded": "mov_text", "cues": 2,
-                               "burned": "tiny.burned.mp4"}
+    assert ch["subtitles"] == {"mode": "soft", "vtt": "tiny.vtt", "srt": "tiny.srt", "embedded": "mov_text", "cues": 2,
+                               "bilingual": False, "burned": "tiny.burned.mp4"}
     assert summary["subtitles"]["cues"] == 2
     # 第二句的字幕在定格之后才出现
     step = ch["chapters"][0]["steps"][0]
@@ -137,3 +164,18 @@ def test_subtitles_none_exports_nothing(tmp_path):
     summary = render(spec, out, None, "l", log=lambda *_: None, backend="moxian")
     assert summary["subtitles"] == {} and not (tmp_path / "tiny.vtt").exists()
     assert "subtitle:mov_text" not in _streams(out)
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="需要 ffmpeg")
+def test_default_burns_bilingual_subtitles_and_keeps_a_clean_copy(tmp_path):
+    spec = tmp_path / "tiny.scene.yaml"
+    body = TINY.replace(", subtitles: SUBS", "").replace('text: "再看一遍。"}', 'text: "再看一遍。", en: "Once more."}')
+    spec.write_text(body, encoding="utf-8")
+    out = tmp_path / "tiny.mp4"
+    summary = render(spec, out, None, "l", log=lambda *_: None, backend="moxian")
+    clean = tmp_path / "tiny.clean.mp4"
+    assert "subtitle:mov_text" not in _streams(out)  # 字幕在画面里，不再叠一条软字幕
+    assert "subtitle:mov_text" in _streams(clean)
+    info = summary["subtitles"]
+    assert info["mode"] == "burned" and info["bilingual"] and info["clean"] == "tiny.clean.mp4"
+    assert "再看一遍\nOnce more." in (tmp_path / "tiny.srt").read_text(encoding="utf-8")

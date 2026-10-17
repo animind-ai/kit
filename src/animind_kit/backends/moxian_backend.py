@@ -42,10 +42,10 @@ from scene_spec import params as spec_params
 from scene_spec import segments as spec_segments
 from scene_spec import selectors
 
-from .. import analysis, lint, segments, timing
+from .. import analysis, lint, segments, subtitles, timing
 from ..mx import layout, scan, widgets
 from ..mx.readout import Readout
-from ..mx.text import mmath, rich
+from ..mx.text import SCALE, mmath, rich
 from ..regions import Region
 from ..theme import Theme
 
@@ -188,6 +188,8 @@ class MoxianCompiler:
         # 场景参数跨 beat 常驻：每个 beat 的时间线从它们当时的值出发补间
         self.params = {k: Param(v, k) for k, v in spec_params.initial(doc).items()}
         self.lifetimes = analysis.lifetimes(doc)
+        # 字号下限（数轴标注、侧栏、练一练框）：按成片算，烧录字幕时画面整体缩小，下限相应抬高
+        self.floors = lint.floors(subtitles.picture_scale(subtitles.mode(doc)))
         self.stack_scale: dict[str, float] = {}
         self.pinned_floor: float | None = None
         self.root = Group(name="root")
@@ -207,7 +209,8 @@ class MoxianCompiler:
         self.followers: dict[int, tuple[Node, Node, Node, np.ndarray]] = {}
         self.ignore_pairs: set[frozenset[str]] = set()
         self.problems: list[str] = []
-        self.lint_config = lint.Config(min_font=float(doc.get("style", {}).get("min_font", lint.Config.min_font)))
+        self.lint_config = lint.Config(min_font=float(doc.get("style", {}).get("min_font", lint.Config.min_font)),
+                                       floors=self.floors)
         self.allow = lint.Allow.from_doc(doc)
         self.tracker = lint.Tracker()
         self.offset = 0.0  # 当前 beat 在整支片子里的起点（秒）
@@ -223,25 +226,62 @@ class MoxianCompiler:
 
     # ---------- 对象 ----------
 
-    def build_object(self, obj_id: str, definition: dict) -> Built:
+    def min_size(self, kind: str) -> float:
+        """某一类文字的字号下限换成 kit 字号（留 4% 余量，排版时的小幅缩放不至于马上掉到下限以下）。"""
+        return self.floors.get(kind, 0.0) / SCALE * 1.04
+
+    def build_object(self, obj_id: str, definition: dict, opts: dict | None = None) -> Built:
+        built = self._build_object(obj_id, definition, opts)
+        # 侧栏里的文字：字号不低于侧栏下限（组件自己标了类别的，例如练一练框，按组件的）
+        if analysis.region_static(self.doc, obj_id) == "side" and getattr(built.node, "font_floor", None) is None:
+            built.node.font_floor = "side"
+        return built
+
+    def _build_object(self, obj_id: str, definition: dict, opts: dict | None = None) -> Built:
         t = self.t
+        side = analysis.region_static(self.doc, obj_id) == "side"
         if "widget" in definition:
             cls = widgets.lookup(definition["widget"])
             if cls is None:
                 raise NotImplementedError(f"kit（墨线）还没有组件 {definition['widget']!r}（对象 {obj_id}）")
-            w = cls(obj_id, definition, t, self.data, self.params)
+            opts = {**({"min_size": self.min_size("practice")} if definition["widget"] == "think_box" else {}),
+                    **(opts or {})}
+            w = cls(obj_id, definition, t, self.data, self.params, opts=opts)
             return Built(w.node, definition, w, w.built.spans, w.built.parts, w.built.items)
         kind = definition["type"]
         role = definition.get("role")
         level = LEVELS[definition.get("level", "body")]
+        floor = self.min_size("side") if side else 0.0
         if kind == "text":
-            r = rich(definition["text"], t, size=36 * level, color=t.ink(role))
+            r = rich(definition["text"], t, size=max(36 * level, floor), color=t.ink(role))
             return Built(r.node, definition, spans=r.spans)
         if kind == "math":
-            return Built(mmath(r"\displaystyle " + definition["tex"], 40 * level, t.ink(role)), definition)
+            return Built(mmath(r"\displaystyle " + definition["tex"], max(40 * level, floor), t.ink(role)), definition)
         if kind == "readout":
-            return Built(Readout(definition, t, self.params, 36 * level).node, definition)
+            return Built(Readout(definition, t, self.params, max(36 * level, floor)).node, definition)
         raise NotImplementedError(f"kit（墨线）0.1 还不支持 type: {kind}（对象 {obj_id}）")
+
+    def _raise_labels(self, obj_id: str) -> bool:
+        """排版后组件的标注字号低于下限（组件被缩小了）：按实际缩放加大 label_size 重建组件，返回是否重建了。
+
+        只在组件第一次排版、还没做过动作时重建；标注变大以后组件更高、缩得更多，所以要再排一次，几轮内收敛。
+        """
+        built = self.objects[obj_id]
+        w = built.widget
+        kind = getattr(w, "label_floor", None)
+        if w is None or kind is None or getattr(w, "acted", False):
+            return False
+        target = self.floors.get(kind, 0.0)
+        em = w.label_size * SCALE * self.world_scale(built.node)
+        if not target or em >= target - 0.05:
+            return False
+        fresh = self._build_object(obj_id, built.definition, {"label_size": w.label_size * target / em * 1.01})
+        fresh.node.font_floor = getattr(built.node, "font_floor", None)
+        fresh.node.set_style(opacity=0.0)
+        index = next(i for i, n in enumerate(self.root.children) if n is built.node)
+        self.root.children[index] = fresh.node
+        self.objects[obj_id] = fresh
+        return True
 
     # ---------- 坐标 ----------
 
@@ -358,19 +398,24 @@ class MoxianCompiler:
         """挂在下面的对象的总高度（含间距），按各自区域先做宽度适配。
 
         同一时刻只有一部分会出现（例如 tr_name 和 tr_d0 都挂在 tr_zero 下面，但不同时可见）；
-        这里保守地按全部累加，宁可排紧一点也不出框。只算和 obj_id 有共同可见 beat 的对象。
+        按 beat 分别累加同一 beat 里可见的那些，取最大的一个 beat（同一 beat 里先后出现的仍然全算，宁可排紧一点也不出框）。
+        只算和 obj_id 有共同可见 beat 的对象；不知道可见期的对象每个 beat 都算。
         """
         mine = self.lifetimes.get(obj_id) or set()
-        total = 0.0
+        heights: list[tuple[set[int] | None, float]] = []
         for other, gap in self.dependents(obj_id):
-            if mine and not (self.lifetimes.get(other, set()) & mine):
+            life = self.lifetimes.get(other, set())
+            if mine and not (life & mine):
                 continue
             node = self.objects[other].node
             layout.fit(node, self.region(other))
-            total += gap + node.height
-        return total
+            heights.append(((life & mine) if (mine and life) else None, gap + node.height))
+        if not heights:
+            return 0.0
+        beats = set().union(*(life for life, _ in heights if life)) or {None}
+        return max(sum(h for life, h in heights if life is None or beat in life) for beat in beats)
 
-    def place(self, obj_id: str) -> Node:
+    def place(self, obj_id: str, attempt: int = 0) -> Node:
         built = self.objects[obj_id]
         if built.placed:
             return built.node
@@ -403,6 +448,8 @@ class MoxianCompiler:
                     for dep, _ in self.dependents(obj_id):
                         self.stack_scale[dep] = min(self.stack_scale.get(dep, 1.0), f)
         layout.place(built.node, d, refs, region, below)
+        if attempt < 6 and self._raise_labels(obj_id):
+            return self.place(obj_id, attempt + 1)
         built.placed = True
         for key in ("over", "within"):
             if key in d:
@@ -411,9 +458,9 @@ class MoxianCompiler:
 
     def resolve(self, text: str, place: bool = False) -> Node:
         sel = selectors.parse(text)
-        built = self.objects[sel.obj]
         if place:
             self.place(sel.obj)
+        built = self.objects[sel.obj]  # 排版时组件可能被重建（数轴标注抬到字号下限），排完再取
         if sel.span:
             return built.spans[sel.span]
         if sel.part:

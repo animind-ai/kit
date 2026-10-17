@@ -1,7 +1,7 @@
 """墨线对象树 → lint.Thing：某一刻画面上每个看得见的字形和图形，坐标换到画面上（含镜头）。
 
 文字认法：路径叶子的祖先里有 moxian 的 Text / Tex 节点就是字形，那个节点就是它所在的"文字段"，
-字号 = 节点的 size（1080p 像素）× 世界缩放 × 镜头放大。残影（ghost）拷出来的是普通路径，
+字号 = 节点的 size（1080p 像素）× 世界缩放 × 镜头放大。祖先节点上的 font_floor（字号下限类别）带到字形上。残影（ghost）拷出来的是普通路径，
 整块当成一段没有字号的文字。其余叶子是图形。
 """
 
@@ -50,8 +50,10 @@ def scan(root: Node, labels: dict[int, Label], camera: Camera | None = None, min
     runs: dict[int, int] = {}
 
     def visit(node: Node, parent: np.ndarray, parent_style: Style | None, label: Label | None,
-              run: tuple[Node, np.ndarray] | None, fixed: bool, anchor: np.ndarray | None) -> None:
+              run: tuple[Node, np.ndarray] | None, fixed: bool, anchor: np.ndarray | None,
+              floor: str | None = None) -> None:
         m = parent @ node.matrix
+        floor = getattr(node, "font_floor", None) or floor
         if node.style is None:
             style = parent_style or Style()
         elif parent_style is None:
@@ -90,14 +92,14 @@ def scan(root: Node, labels: dict[int, Label], camera: Camera | None = None, min
                         text = getattr(rnode, "source", None) or getattr(rnode, "text", "") or ""
                         text = text.replace("\\displaystyle ", "")
                     things.append(Thing("text", label.owner, label.obj, tuple(b), 0, runs.setdefault(key, len(runs)),
-                                        text, em, label.act, follows=not fixed))
+                                        text, em, label.act, follows=not fixed, floor=floor))
                 else:
                     curves, closed = flatten(path, screen)
                     things.append(Thing("shape", label.owner, label.obj, tuple(b), 0, act=label.act,
                                         curves=curves, closed=closed, stroked=stroked, fill=fill, follows=not fixed))
                 fixed_flags.append(fixed)
         for child in sorted(node.children, key=lambda n: n.z):
-            visit(child, m, style, label, run, fixed, anchor)
+            visit(child, m, style, label, run, fixed, anchor, floor)
 
     visit(root, T.identity(), None, None, None, False, None)
     # 绘制顺序：和 SkiaRenderer 一致，镜头生效时不跟镜头走的一层最后画

@@ -29,9 +29,11 @@ class Built:
 class Widget:
     name = "widget"
 
-    def __init__(self, obj_id: str, definition: dict, theme: Theme, data: dict, params: dict | None = None):
+    def __init__(self, obj_id: str, definition: dict, theme: Theme, data: dict, params: dict | None = None,
+                 opts: dict | None = None):
         self.obj_id, self.definition, self.theme, self.data = obj_id, definition, theme, data
         self.params = params or {}  # 场景参数：名字 → moxian.anim.Param（组件属性里的表达式按它们的当前值求值）
+        self.opts = opts or {}  # 后端给的排版选项（不来自场景文件）：min_size 字号下限、label_size 数轴标注字号
         self.built = self.build()
 
     def build(self) -> Built:
@@ -220,11 +222,14 @@ class Chips(Widget):
 class ThinkBox(Widget):
     name = "think_box"
 
+    SIZE = 30  # 「练一练」框常放在窄的侧栏里，字号下限见 lint.FLOORS_720["practice"]
+
     def build(self) -> Built:
         t = self.theme
         lines, spans = [], {}
+        size = max(self.SIZE, float(self.opts.get("min_size", 0.0)))
         for i, text in enumerate(self.definition["lines"]):
-            r = rich(text, t, size=27, color=t.HL_INK if i == 0 and text.startswith("[") else t.FG)
+            r = rich(text, t, size=size, color=t.HL_INK if i == 0 and text.startswith("[") else t.FG)
             lines.append(r.node)
             spans.update(r.spans)
         arrange(lines, DOWN, gap=0.16, align=LEFT)
@@ -234,7 +239,9 @@ class ThinkBox(Widget):
         box = PathNode(path=rounded_rect(body.width + 0.6, body.height + 0.4, 0.14),
                        style=Style(fill=t.MARK, fill_opacity=0.6, stroke=t.HL_INK, stroke_width=2))
         box.move_to(body.center())
-        return Built(Group(box, body), spans=spans, items=lines)
+        node = Group(box, body)
+        node.font_floor = "practice"
+        return Built(node, spans=spans, items=lines)
 
 
 # ---------- 总结卡 ----------

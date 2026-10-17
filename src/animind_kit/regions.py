@@ -11,6 +11,7 @@ GAPS = {"xs": 0.1, "sm": 0.2, "md": 0.4, "lg": 0.7, "xl": 1.0}
 PIN_WIDTH = 12.4
 PIN_MAX_HEIGHT = 2.5
 PIN_TOP_MARGIN = 0.16
+SIDE_WIDTH = 4.2  # 右侧栏宽度（原来 3.4；侧栏字号下限抬高后，一行十来个字要放得下）
 
 
 @dataclass(frozen=True)
@@ -40,11 +41,11 @@ def regions(top_used: bool = True, side_used: bool = True, footer_used: bool = T
     left, right, top, bottom = -w / 2 + MARGIN, w / 2 - MARGIN, h / 2 - MARGIN, -h / 2 + MARGIN
     stage_top = top - 2.8 if top_used else top
     stage_bottom = bottom + 1.1 if footer_used else bottom
-    stage_right = right - 3.6 if side_used else right
+    stage_right = right - SIDE_WIDTH - 0.2 if side_used else right
     return {
         "top": Region("top", left, right, top - 2.6, top),
         "stage": Region("stage", left, stage_right, stage_bottom, stage_top),
-        "side": Region("side", right - 3.4, right, stage_bottom, stage_top),
+        "side": Region("side", right - SIDE_WIDTH, right, stage_bottom, stage_top),
         "footer": Region("footer", left, right, bottom, bottom + 1.0),
     }
 

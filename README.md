@@ -10,6 +10,7 @@
 - **组件**：题卡（可回填答案）、步骤胶囊、想一想框、总结卡、差分表（derive / extend / triangle）、对齐等式组 `equations`、数列格子 `seq_cells`（fill）。墨线版在 `mx/`；Manim 版 `widgets/` 只有前五个，所以只能渲染 p01 这样的内容。
 - **数轴** `mx/numberline.py`：跳跃（可从任意点起跳、几段接着走、换颜色、不标计数）、垫色（可几段并存）、带角色的点，
   以及轴下方和 0..end 等长的分数条（`bars: true` 预留位置；`bar` / `fill` / `group` 动作）；`unit` 调一个单位的长度。
+  数字和分数标注一律用 `\dfrac`（分子分母不缩小），排版后按数轴的实际缩放把标注字号抬到下限（见下面的"字号下限"）。
 - **格子正方形** `mx/grid.py`（`area_grid`）：cols × rows 格，`cut` 画切线、`shade` 涂列或行、`overlap` 标出交叠格，分数乘法用。
 - **墨线后端** `backends/moxian_backend.py` + `mx/`：对象树跨 beat 常驻，每个 beat 一条时间线；文字、组件、布局都在 `mx/` 里用墨线实现。动作按旁白句子和书签的时刻播放，画面跟不上旁白时打印 `CUE LATE`。
 - **Manim 后端** `backends/manim_backend.py` + `widgets/`：保留用于对照，每个 beat 一个 Scene。
@@ -29,6 +30,7 @@ uv run animind-kit render ../scene-spec/examples/s67-p01.scene.yaml \
   --audio /path/to/p01/audio \
   --quality m            # l=480p15 m=720p30 h=1080p30
   # --backend manim      # 切回 Manim 对照
+  # --subtitles soft     # 覆盖 style.subtitles：burned（默认）/ soft / none
 ```
 
 墨线后端渲染整支 §6.7 第 01 支（4 分 40 秒）：480p 约 4 秒，720p 约 9 秒；Manim 后端 480p 约 26 秒，720p 约 24 秒。
@@ -58,7 +60,7 @@ uv run animind-kit inspect ../scene-spec/examples/s67-p02.scene.yaml --audio /pa
 uv run animind-kit inspect ../scene-spec/examples/ep22.scene.yaml --no-sheets   # 只打印问题
 ```
 
-在每批动作结束后的第一帧和每个 beat 的末帧看每个字（墨线后端），报五类问题：`small`（字号低于 `style.min_font`，没写时 16px，按 1080p 算）、`cross`（线或填充的边穿过字，同一对象内部也算）、`covered`（不透明填充盖住字）、`overlap`（两段文字压在一起）、`clip`（伸出画面）。每条问题带编号、beat、时间范围（beat 内的成片时刻和整支片子里的大致时刻）、来源动作（`do[4] focus at=s2@b3`）和涉及的对象，例如：
+在每批动作结束后的第一帧和每个 beat 的末帧看每个字（墨线后端），报五类问题：`small`（字号低于 `style.min_font`，没写时 16px，按 1080p 算；几类文字另有下限，见下）、`cross`（线或填充的边穿过字，同一对象内部也算）、`covered`（不透明填充盖住字）、`overlap`（两段文字压在一起）、`clip`（伸出画面）。每条问题带编号、beat、时间范围（beat 内的成片时刻和整支片子里的大致时刻）、来源动作（`do[4] focus at=s2@b3`）和涉及的对象，例如：
 
 ```
 [5] Zoom t=3.9s（片中 83.0s） do[5] camera at=s1@z  cross  cap10 × g：g 的线穿过文字「放大 10 倍：弯曲已经不太明显」
@@ -68,13 +70,27 @@ uv run animind-kit inspect ../scene-spec/examples/ep22.scene.yaml --no-sheets   
 
 `--audio` 目录里要有每个 beat 的 `<beat>.wav` 和 `<beat>.timing.json`（voice 流水线的输出格式；没有音频的 beat 按每个汉字 0.22 秒估算时长）。`--quality` 取 `l` / `m` / `h`。
 
+### 字号下限
+
+2026-10-17 定的默认值，按**成片 720p** 的像素写在 `lint.FLOORS_720`（手机上看得清）：
+
+| 类别 | 下限 | 哪些字 |
+|---|---|---|
+| `label` | 36px | 数轴上的整数、分数刻度、点的标注、剩余段的分数 |
+| `side` | 26px | `side` 侧栏里的对象（侧栏宽 4.2 个单位） |
+| `practice` | 26px | 「练一练」/ 想一想框 `think_box` |
+
+字幕烧进画面时画面整体缩到 88%，下限按 1 / 0.88 抬高（换成 1080p 渲染坐标：`label` 61px，其余 44px；不烧录时 54px、39px）。组件和区域在节点上标 `font_floor`，inspect / render 的 `small` 按类别判。数轴标注在排版后若被缩到下限以下，kit 加大 `label_size` 重建数轴再排一次；侧栏文字和练一练框的默认字号直接取下限，放不下时会报 `small`，这时把长句拆成几行。
+
 ### 分段播放、字幕和章节文件
 
 `x.mp4` 渲染完，旁边还有（墨线后端）：
 
 - `x.chapters.json`：播放器用的章节表；
-- `x.vtt`、`x.srt`：软字幕（`style.subtitles: soft`，默认），同一份字幕也以 mov_text 轨道封装进 `x.mp4`（标为默认轨，播放器里可关；画面里没有字）；`subtitles: none` 时都不出；
-- `x.burned.mp4`：只有加了 `--burn-subtitles` 才出，给不支持软字幕的平台。画面整体缩到 90%，底部让出一条字幕带，字幕画在带里，不压住 footer 的公式。
+- `x.vtt`、`x.srt`：字幕文件，三种模式都出；
+- 字幕默认开（`style.subtitles: burned`，默认）：字幕烧进 `x.mp4` 的画面，画面整体缩到 88%，底部让出一条字幕带，字幕画在带里，不压住 footer 的公式；另出 `x.clean.mp4`（画面干净，字幕以 mov_text 轨道封装，给 App、YouTube 这类自己显示字幕的播放器）；
+- `subtitles: soft`：字幕只以 mov_text 轨道封装进 `x.mp4`（默认轨，可关）；再加 `--burn-subtitles` 另出烧录副本 `x.burned.mp4`；`subtitles: none` 时都不出；
+- 中英双语：句子写了 `en`（英文字幕）时每条两行，中文在上、英文在下（烧录时英文小一号、颜色淡一点）；英文按词切成和中文条数相当的几段，跟着中文走。
 
 字幕文字是 `say` 的原文（不是 TTS 的读法）：去掉书签 `{@x}`，`$...$` 公式转成 Unicode（`a_n`→aₙ、`x^2`→x²、`\frac{2}{3}`→⅔、`\frac{a+b}{2}`→(a+b)/2、`\sqrt{x}`→√x），不留 LaTeX 命令。每句的起止取 `timing.json` 的 cues，加上这一段在成片里的起点（子步定格顺延）；长句按标点切成每条不超过 18 个字宽（汉字 1，西文和数字 0.5），句内时刻按 Whisper 对齐的书签插值。
 

@@ -109,19 +109,40 @@ def write_chapters(doc: dict, clip_seconds: list[float], out: Path, beat_info: d
 
 
 def export_subtitles(doc: dict, out: Path, clip_seconds: list[float], beat_info: dict, theme, burn: bool, log) -> dict:
-    """style.subtitles 不是 none 时：写 <名>.vtt / <名>.srt，封装成 mp4 的软字幕轨；burn 时另出 <名>.burned.mp4。"""
+    """按字幕模式（subtitles.mode）导出：都写 <名>.vtt / <名>.srt（双语时每条两行）。
+
+    burned（默认）：<名>.mp4 的画面里烧进字幕；另存 <名>.clean.mp4（画面干净，带软字幕轨）。
+    soft：<名>.mp4 封装软字幕轨；burn（--burn-subtitles）时另出 <名>.burned.mp4。none：什么都不出。
+    """
+    import shutil
+
     from . import subtitles
 
-    if doc.get("style", {}).get("subtitles", "soft") == "none":
+    mode = subtitles.mode(doc)
+    if mode == "none":
         return {}
     starts = [sum(clip_seconds[:i]) for i in range(len(clip_seconds))]
     cues = subtitles.build(doc, starts, beat_info)
     vtt, srt = subtitles.write(cues, out)
+    bilingual = any(c.en for c in cues)
+    info = {"mode": mode, "vtt": vtt.name, "srt": srt.name, "cues": len(cues), "bilingual": bilingual}
+    work = out.parent / f".build-{out.stem}-subtitles"
+    if mode == "burned":
+        clean = out.with_name(f"{out.stem}.clean.mp4")
+        shutil.copyfile(out, clean)
+        subtitles.mux_soft(clean, srt)
+        burning = out.with_name(f"{out.stem}.burning.mp4")
+        subtitles.burn(out, cues, burning, theme.BG, theme.FG, work)
+        burning.replace(out)
+        info.update(burned=out.name, clean=clean.name, embedded_in=clean.name)
+        log(f"字幕 {len(cues)} 条{'（中英双语）' if bilingual else ''} → 已烧进 {out.name}；"
+            f"{vtt.name}、{srt.name}；画面干净的 {clean.name} 带软字幕轨")
+        return info
     subtitles.mux_soft(out, srt)
-    info = {"vtt": vtt.name, "srt": srt.name, "embedded": "mov_text", "cues": len(cues)}
+    info["embedded"] = "mov_text"
     if burn:
         burned = out.with_name(f"{out.stem}.burned.mp4")
-        subtitles.burn(out, cues, burned, theme.BG, theme.FG, out.parent / f".build-{out.stem}-subtitles")
+        subtitles.burn(out, cues, burned, theme.BG, theme.FG, work)
         info["burned"] = burned.name
     log(f"字幕 {len(cues)} 条 → {vtt.name}、{srt.name}（已封装为软字幕轨）" + ("，烧录副本 " + info["burned"] if burn else ""))
     return info
@@ -163,13 +184,17 @@ def inspect(spec: Path, audio_dir: Path | None, out_dir: Path | None, beats: lis
 
 
 def render(spec: Path, out: Path, audio_dir: Path | None, quality: str = "l", only: list[str] | None = None, log=print,
-           backend: str = "manim", burn_subtitles: bool = False, theme_name: str | None = None) -> dict:
+           backend: str = "manim", burn_subtitles: bool = False, theme_name: str | None = None,
+           subtitles: str | None = None) -> dict:
+    """subtitles：覆盖 style.subtitles（burned / soft / none）；版式（字号下限）也按覆盖后的模式算。"""
     doc = load_file(spec)
     report = check(doc)
     for issue in report.issues:
         log(str(issue))
     if not report.ok:
         raise SystemExit("scene-spec 检查未通过，不渲染")
+    if subtitles:
+        doc = {**doc, "style": {**doc.get("style", {}), "subtitles": subtitles}}
 
     build = out.parent / f".build-{spec.stem}-{backend}"
     theme = load_theme(theme_name or doc.get("style", {}).get("theme", "paper"))

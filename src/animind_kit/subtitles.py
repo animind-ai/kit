@@ -1,11 +1,17 @@
-"""软字幕：按 style.subtitles 导出 WebVTT / SRT，封装进 mp4（mov_text，可关），可选烧录一份副本。
+"""字幕：按 style.subtitles 导出 WebVTT / SRT，烧进画面（默认）或封装成可关的软字幕轨。
+
+- 三种模式（style.subtitles，命令行 --subtitles 可覆盖）：
+  burned（默认）成片 <名>.mp4 的画面里就有字幕（中英双语时上中下英），另出一份画面干净、带软字幕轨的 <名>.clean.mp4
+  给自己会显示字幕的播放器（App、YouTube）；soft 成片只带软字幕轨（mov_text，默认轨，可关）；none 不出字幕。
+- 双语：句子写了 en（英文字幕）时每条字幕两行，中文在上；英文按词切成和中文条数相当的几段，跟着中文走。
 
 - 文字用 say 的显示文本（场景文件里写的原文，不是给 TTS 的读法）：去掉书签 {@x}，
   $...$ 公式转成 Unicode 数学写法（a_n → aₙ，x^2 → x²，\\frac{2}{3} → ⅔，\\sqrt{x} → √x），不留 LaTeX 命令。
 - 时间：每句的起止取 timing.json 的 cues（经过子步定格顺延），加上这一段在整片里的起点。
   长句按标点切成每条不超过 MAX_UNITS 个字宽（汉字算 1，西文、数字算 0.5）的小条；
   句内的时刻按书签插值（书签有 Whisper 对齐的真实时刻），书签之间按字数比例。
-- 烧录（--burn-subtitles）：画面整体缩到 90%，底部让出一条字幕带，字幕画在带里，不压住 footer 的公式。
+- 烧录：画面整体缩到 1 - BAND，底部让出一条字幕带，字幕画在带里，不压住 footer 的公式。
+  画面缩小以后字也跟着小，所以 burned 时 kit 的字号下限（lint.floors）按 1 / (1 - BAND) 抬高。
 """
 
 from __future__ import annotations
@@ -15,7 +21,10 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+MODES = ("burned", "soft", "none")
+DEFAULT = "burned"  # 2026-10-17 定：字幕默认开（烧进画面）
 MAX_UNITS = 18.0
+EN_MAX = 64  # 英文字幕每段最多几个字符
 MIN_SECONDS = 0.5
 BREAK = set("，。！？；：、!?;")
 DROP_TAIL = set("，。；：、,;:")
@@ -186,11 +195,29 @@ def units(text: str) -> float:
     return sum(0.5 if (c.isascii() or c in "²³¹⁰⁴⁵⁶⁷⁸⁹ₙ½⅓⅔¼¾") else 1.0 for c in text)
 
 
+def mode(doc: dict, override: str | None = None) -> str:
+    """字幕模式：命令行覆盖 > style.subtitles > 默认（burned）。"""
+    value = override or doc.get("style", {}).get("subtitles") or DEFAULT
+    if value not in MODES:
+        raise ValueError(f"style.subtitles 只能是 {' / '.join(MODES)}：{value!r}")
+    return value
+
+
+def picture_scale(subtitle_mode: str) -> float:
+    """成片里画面内容相对渲染画面的缩放：烧录字幕时让出字幕带，其余模式不缩。"""
+    return 1.0 - BAND if subtitle_mode == "burned" else 1.0
+
+
 @dataclass
 class Cue:
     start: float
     end: float
     text: str
+    en: str = ""  # 英文（双语字幕的第二行）
+
+    @property
+    def lines(self) -> str:
+        return f"{self.text}\n{self.en}" if self.en else self.text
 
 
 def _pieces(text: str) -> tuple[str, list[tuple[int, str]]]:
@@ -244,7 +271,57 @@ def _clock(anchors: list[tuple[float, float]], pos: float) -> float:
     return anchors[-1][1]
 
 
-def sentence_cues(text: str, start: float, end: float, marks: dict[str, float] | None = None) -> list[Cue]:
+def en_pieces(text: str, n: int, limit: int = EN_MAX) -> list[str]:
+    """英文字幕切成几段：段数不超过中文条数 n，每段尽量不超过 limit 个字符，优先在标点后切，各段长度尽量均匀。"""
+    words = text.split()
+    if not words:
+        return []
+    k = max(1, min(n, -(-len(text) // limit)))
+    while k <= len(words):
+        target = len(text) / k
+        pieces, cur = [], []
+        for i, w in enumerate(words):
+            cur.append(w)
+            left = len(words) - i - 1
+            room = k - len(pieces) - 1  # 还要切出的段数
+            size = len(" ".join(cur))
+            if room and left >= room and (size >= target or (size >= target * 0.6 and w[-1] in ",.;:?!")):
+                pieces.append(" ".join(cur))
+                cur = []
+        if cur:
+            pieces.append(" ".join(cur))
+        if all(len(p) <= limit for p in pieces) or k >= n:
+            return pieces
+        k += 1
+    return [" ".join(words)]
+
+
+def _attach_en(cues: list[Cue], shown: str, spans: list[tuple[int, int]], en: str) -> None:
+    """把英文的几段分给中文的各条：按中文条的中点落在全句的哪个比例位置，取对应比例位置的英文段。"""
+    pieces = en_pieces(en, len(cues))
+    if not pieces:
+        return
+    total = sum(len(p) for p in pieces)
+    bounds, acc = [], 0
+    for p in pieces:
+        acc += len(p)
+        bounds.append(acc / total)
+    picked = []
+    for a, b in spans:
+        mid = (a + b) / 2 / max(1, len(shown))
+        picked.append(next(i for i, edge in enumerate(bounds) if mid <= edge + 1e-9))
+    # 没被任何中文条取到的英文段，并进前一段（或后一段），不丢字
+    used = sorted(set(picked))
+    merged = {}
+    for i, p in enumerate(pieces):
+        owner = max((u for u in used if u <= i), default=used[0])
+        merged[owner] = (merged.get(owner, "") + " " + p).strip()
+    for cue, i in zip(cues, picked):
+        cue.en = merged[i]
+
+
+def sentence_cues(text: str, start: float, end: float, marks: dict[str, float] | None = None,
+                  en: str | None = None) -> list[Cue]:
     shown, positions = _pieces(text)
     if not shown:
         return []
@@ -254,7 +331,7 @@ def sentence_cues(text: str, start: float, end: float, marks: dict[str, float] |
         if t is not None and anchors[-1][0] <= pos and anchors[-1][1] <= t <= end:
             anchors.append((float(pos), t))
     anchors.append((float(len(shown)), end))
-    out = []
+    out, spans = [], []
     for a, b in chunks(shown):
         words = shown[a:b].strip()
         while words and words[-1] in DROP_TAIL:
@@ -262,6 +339,9 @@ def sentence_cues(text: str, start: float, end: float, marks: dict[str, float] |
         if not words:
             continue
         out.append(Cue(_clock(anchors, a), _clock(anchors, b), words))
+        spans.append((a, b))
+    if en and out:
+        _attach_en(out, shown, spans, en.strip())
     for cue, nxt in zip(out, out[1:]):  # 太短的条往后借一点，不压到下一条
         cue.end = max(cue.end, min(cue.start + MIN_SECONDS, nxt.start))
     if out:
@@ -276,7 +356,8 @@ def build(doc: dict, beat_starts: list[float], beat_info: dict[str, dict]) -> li
         info = beat_info.get(beat["id"], {})
         for sentence, timing in zip(beat.get("say", []), info.get("cues", [])):
             marks = {k: offset + v for k, v in timing.get("marks", {}).items()}
-            cues += sentence_cues(sentence["text"], offset + timing["start"], offset + timing["end"], marks)
+            cues += sentence_cues(sentence["text"], offset + timing["start"], offset + timing["end"], marks,
+                                  sentence.get("en"))
     return cues
 
 
@@ -293,14 +374,14 @@ def _stamp(t: float, sep: str) -> str:
 def to_vtt(cues: list[Cue]) -> str:
     out = ["WEBVTT", ""]
     for n, c in enumerate(cues, 1):
-        out += [str(n), f"{_stamp(c.start, '.')} --> {_stamp(c.end, '.')}", c.text, ""]
+        out += [str(n), f"{_stamp(c.start, '.')} --> {_stamp(c.end, '.')}", c.lines, ""]
     return "\n".join(out)
 
 
 def to_srt(cues: list[Cue]) -> str:
     out = []
     for n, c in enumerate(cues, 1):
-        out += [str(n), f"{_stamp(c.start, ',')} --> {_stamp(c.end, ',')}", c.text, ""]
+        out += [str(n), f"{_stamp(c.start, ',')} --> {_stamp(c.end, ',')}", c.lines, ""]
     return "\n".join(out)
 
 
@@ -324,11 +405,15 @@ def mux_soft(video: Path, srt: Path, language: str = "chi") -> Path:
     return video
 
 
-BAND = 0.1  # 烧录时底部字幕带占画面高度的比例
+BAND = 0.12  # 烧录时底部字幕带占画面高度的比例（双语两行：720p 下中文约 34px、英文约 24px）
+TEXT_WIDTH = 0.86  # 字幕最宽占画面宽度的比例（右下角还要留给品牌角标）
 
 
 def burn(video: Path, cues: list[Cue], out: Path, background: str, ink: str, work: Path) -> Path:
-    """烧录副本：画面缩到 (1-BAND)，底部让出字幕带，字幕用 Noto Sans CJK SC 画成 PNG 按时间叠上去。"""
+    """烧录：画面缩到 (1-BAND)，底部让出字幕带，字幕用 Noto Sans CJK SC 画成 PNG 按时间叠上去。
+
+    有英文时两行（中文在上、英文在下、英文字小一号、颜色淡一点），没有时一行居中。太宽的行按比例缩小字号。
+    """
     import skia
     from moxian.text.font import typeface
 
@@ -339,26 +424,43 @@ def burn(video: Path, cues: list[Cue], out: Path, background: str, ink: str, wor
     inner_h = h - band
     inner_w = int(round(w * inner_h / h / 2)) * 2
     work.mkdir(parents=True, exist_ok=True)
-    font = skia.Font(typeface("Noto Sans CJK SC"), band * 0.5)
-    paint = skia.Paint(Color=skia.Color(*_rgb(ink)), AntiAlias=True)
+    face = typeface("Noto Sans CJK SC")
+    bilingual = any(c.en for c in cues)
+    zh_size, en_size = (band * 0.40, band * 0.28) if bilingual else (band * 0.46, 0.0)
+    r, g, b, _ = _rgb(ink)
+    br, bg_, bb, _ = _rgb(background)
+    soft = skia.Color(int(r * 0.75 + br * 0.25), int(g * 0.75 + bg_ * 0.25), int(b * 0.75 + bb * 0.25), 255)
+    zh_paint = skia.Paint(Color=skia.Color(r, g, b, 255), AntiAlias=True)
+    en_paint = skia.Paint(Color=soft, AntiAlias=True)
 
-    def card(text: str, name: str) -> Path:
+    def draw(canvas, text: str, size: float, paint, baseline: float) -> None:
+        font = skia.Font(face, size)
+        width = font.measureText(text)
+        if width > w * TEXT_WIDTH:
+            font = skia.Font(face, size * w * TEXT_WIDTH / width)
+            width = font.measureText(text)
+        canvas.drawString(text, (w - width) / 2, baseline, font, paint)
+
+    def card(cue: Cue | None, name: str) -> Path:
         surface = skia.Surface(w, band)
         with surface as canvas:
             canvas.clear(skia.Color(*_rgb(background)))
-            if text:
-                width = font.measureText(text)
-                canvas.drawString(text, (w - width) / 2, band * 0.66, font, paint)
+            if cue is not None and bilingual:
+                draw(canvas, cue.text, zh_size, zh_paint, band * 0.46)
+                if cue.en:
+                    draw(canvas, cue.en, en_size, en_paint, band * 0.84)
+            elif cue is not None:
+                draw(canvas, cue.text, zh_size, zh_paint, band * 0.66)
         path = work / f"{name}.png"
         surface.makeImageSnapshot().save(str(path), skia.kPNG)
         return path
 
-    blank = card("", "blank")
+    blank = card(None, "blank")
     lines, t = [], 0.0
     for n, c in enumerate(cues):
         if c.start > t:
             lines += [f"file '{blank.resolve()}'", f"duration {c.start - t:.3f}"]
-        lines += [f"file '{card(c.text, f'cue{n:04d}').resolve()}'", f"duration {c.end - c.start:.3f}"]
+        lines += [f"file '{card(c, f'cue{n:04d}').resolve()}'", f"duration {c.end - c.start:.3f}"]
         t = c.end
     lines += [f"file '{blank.resolve()}'", "duration 1.000", f"file '{blank.resolve()}'"]
     playlist = work / "bands.txt"
