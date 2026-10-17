@@ -393,6 +393,7 @@ REGISTRY: dict[str, type[Widget]] = {
     "area_grid": __import__("animind_kit.mx.grid", fromlist=["AreaGrid"]).AreaGrid,  # 格子正方形在 grid.py（分数乘法的交叠格；rect 模式切长方形）
     "ten_frame": __import__("animind_kit.mx.dots", fromlist=["TenFrame"]).TenFrame,  # 十格框在 dots.py（凑十）
     "dot_array": __import__("animind_kit.mx.dots", fromlist=["DotArray"]).DotArray,  # 点阵在 dots.py（转 90°、补满、淡出一列）
+    "block_bars": __import__("animind_kit.mx.bars", fromlist=["BlockBars"]).BlockBars,  # 积木条形图在 bars.py（平均数削峰填谷）
 }
 
 
