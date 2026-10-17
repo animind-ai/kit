@@ -541,6 +541,8 @@ class Graph(Widget):
             b = lab_rise.bbox()
             sx, sy = self._s(bx, (ay + by) / 2)
             side = 1.0 if run >= 0 else -1.0  # 竖边外侧
+            if abs(rise) * self.u < b.height * 1.2:  # 竖边几乎没有长度（k≈0）：标在横边右端的上方，别压在线上
+                sy = ay * self.u + 0.18 + b.height / 2
             lab_rise.shift([sx + side * (0.14 + b.width / 2) - b.center[0], sy - b.center[1]])
             out += [lab_run, lab_rise]
         return out
