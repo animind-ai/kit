@@ -422,6 +422,11 @@ class MoxianCompiler:
         for problem in layout.check(self.visible, self.ignore_pairs, pinned):
             self.problems.append(f"{beat['id']}: {problem}")
             self.log(f"LAYOUT {beat['id']}: {problem}")
+        # 组件内部的结束状态检查（例如 dissect 的标签互相压住）；移动途中的重叠不算
+        for k in [k for k in self.visible if k in self.objects]:
+            for problem in getattr(self.objects[k].widget, "end_problems", list)():
+                self.problems.append(f"{beat['id']}: {problem}")
+                self.log(f"LAYOUT {beat['id']}: {problem}")
         return until
 
     def _solve_layout(self, beat_id: str, new: set[str]) -> None:
