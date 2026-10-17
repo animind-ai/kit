@@ -39,6 +39,8 @@ class BeatTiming:
         return t + (float(offset) if offset else 0.0)
 
     def _sentence(self, ref: str) -> Sentence:
+        if not self.sentences and ref == "0":  # 没有旁白的 beat：at: 0 就是 beat 开始
+            return Sentence(None, 0.0, 0.0, {})
         if ref.isdigit():
             return self.sentences[int(ref)]
         return next(s for s in self.sentences if s.id == ref)

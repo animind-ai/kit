@@ -28,8 +28,9 @@ class Built:
 class Widget:
     name = "widget"
 
-    def __init__(self, obj_id: str, definition: dict, theme: Theme, data: dict):
+    def __init__(self, obj_id: str, definition: dict, theme: Theme, data: dict, params: dict | None = None):
         self.obj_id, self.definition, self.theme, self.data = obj_id, definition, theme, data
+        self.params = params or {}  # 场景参数：名字 → moxian.anim.Param（组件属性里的表达式按它们的当前值求值）
         self.built = self.build()
 
     def build(self) -> Built:

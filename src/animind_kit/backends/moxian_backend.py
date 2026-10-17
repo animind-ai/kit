@@ -13,7 +13,22 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import numpy as np
-from moxian.anim import Animation, CameraMove, Draw, Restyle, Shift, TransformCopy, Wait, Write, fade_in, fade_out, together
+from moxian.anim import (
+    Animation,
+    CameraMove,
+    Draw,
+    Param,
+    ParamTween,
+    Restyle,
+    Shift,
+    TransformCopy,
+    Wait,
+    Write,
+    easing,
+    fade_in,
+    fade_out,
+    together,
+)
 from moxian.anim.camera import focus_on
 from moxian.anim.camera import reset as camera_reset
 from moxian.anim.timeline import Timeline
@@ -22,10 +37,12 @@ from moxian.encode import render_video
 from moxian.path import Path as VPath
 from moxian.path import line, rounded_rect
 from moxian.render import SkiaRenderer
+from scene_spec import params as spec_params
 from scene_spec import selectors
 
 from .. import analysis, timing
 from ..mx import layout, widgets
+from ..mx.readout import Readout
 from ..mx.text import mmath, rich
 from ..regions import Region
 from ..theme import Theme
@@ -33,7 +50,7 @@ from ..theme import Theme
 DEFAULT_DUR = {
     "show": 0.6, "hide": 0.4, "transform": 1.0, "move": 0.8, "focus": 0.4, "unfocus": 0.4,
     "mark": 0.3, "unmark": 0.3, "underline": 0.4, "circle": 0.5, "cross": 0.4, "clear": 0.4, "set": 0.3,
-    "camera": 1.5,
+    "camera": 1.5, "tween": spec_params.DEFAULT_TWEEN,
 }
 CAMERA_ZOOM = 2.0  # camera 只给 target 时的默认放大倍数
 CAMERA_MARGIN = 0.5  # fit 时四周留白（画面单位）
@@ -130,6 +147,8 @@ class MoxianCompiler:
         self.doc, self.t, self.audio_dir, self.log = doc, theme, audio_dir, log
         self.width, self.height, self.fps = SIZES[quality]
         self.data = doc.get("data", {})
+        # 场景参数跨 beat 常驻：每个 beat 的时间线从它们当时的值出发补间
+        self.params = {k: Param(v, k) for k, v in spec_params.initial(doc).items()}
         self.lifetimes = analysis.lifetimes(doc)
         self.stack_scale: dict[str, float] = {}
         self.pinned_floor: float | None = None
@@ -165,7 +184,7 @@ class MoxianCompiler:
             cls = widgets.lookup(definition["widget"])
             if cls is None:
                 raise NotImplementedError(f"kit（墨线）还没有组件 {definition['widget']!r}（对象 {obj_id}）")
-            w = cls(obj_id, definition, t, self.data)
+            w = cls(obj_id, definition, t, self.data, self.params)
             return Built(w.node, definition, w, w.built.spans, w.built.parts, w.built.items)
         kind = definition["type"]
         role = definition.get("role")
@@ -175,6 +194,8 @@ class MoxianCompiler:
             return Built(r.node, definition, spans=r.spans)
         if kind == "math":
             return Built(mmath(r"\displaystyle " + definition["tex"], 40 * level, t.ink(role)), definition)
+        if kind == "readout":
+            return Built(Readout(definition, t, self.params, 36 * level).node, definition)
         raise NotImplementedError(f"kit（墨线）0.1 还不支持 type: {kind}（对象 {obj_id}）")
 
     # ---------- 坐标 ----------
@@ -362,6 +383,7 @@ class MoxianCompiler:
     def render_beat(self, beat: dict, clip: Path) -> float:
         bt = timing.load(beat, self.audio_dir)
         tl_items: list[tuple[float, Animation]] = []
+        snapshots: list[tuple[float, dict[str, Node]]] = [(-1.0, dict(self.visible))]  # 每批动作之后谁在画面上
         prev_end = 0.0
         actions = beat.get("do", [])
         i = 0
@@ -396,6 +418,7 @@ class MoxianCompiler:
                 anims += a
                 run_time = max(run_time, d)
             self._solve_layout(beat["id"], set(self.visible) - before)
+            snapshots.append((start, dict(self.visible)))
             # 叠加层先 begin：量目标几何时，同一批的书写、变形还没改动路径
             anims.sort(key=lambda a: not isinstance(a, _Overlay))
             if anims:
@@ -419,10 +442,36 @@ class MoxianCompiler:
         render_video(self.root, tl, clip, renderer, fps=self.fps, audio=audio, until=until, log=lambda *_: None)
         self.stats["beats"] += 1
         pinned = {k for k, v in self.objects.items() if v.definition.get("pin")}
-        for problem in layout.check(self.visible, self.ignore_pairs, pinned):
+        found = layout.check(self.visible, self.ignore_pairs, pinned)
+        if tl.schedules:
+            found += self._param_layout(tl, snapshots, pinned, {p.split("（")[0] for p in found})
+        for problem in found:
             self.problems.append(f"{beat['id']}: {problem}")
             self.log(f"LAYOUT {beat['id']}: {problem}")
         return until
+
+    def _param_layout(self, tl: Timeline, snapshots: list[tuple[float, dict[str, Node]]], pinned: set[str],
+                      seen: set[str]) -> list[str]:
+        """参数在变的 beat：包围盒跟着参数变，结束帧没问题不代表中间没问题。
+
+        在每个补间的起点、中点、终点，把参数设成那一刻的值，检查那时在画面上的对象（按动作批次记下的快照），
+        再把参数恢复成结束时的值。位置用结束时的（同一段里别的对象一般不会同时移动）。同一对冲突只报一次。
+        """
+        final = {p: p.value for p in tl.params()}
+        out: list[str] = []
+        for t in tl.keyframes():
+            visible = next(snap for start, snap in reversed(snapshots) if start <= t + 1e-9)
+            for p in final:
+                p.set(tl.param_at(p, t))
+            values = "，".join(f"{p.name}={p.value:.3g}" for p in final)
+            for problem in layout.check(visible, self.ignore_pairs, pinned):
+                key = problem.split("（")[0]
+                if key not in seen:
+                    seen.add(key)
+                    out.append(f"{problem}（t={t:.2f}s，{values}）")
+        for p, v in final.items():
+            p.set(v)
+        return out
 
     def _solve_layout(self, beat_id: str, new: set[str]) -> None:
         """这一批动作新显示了对象时，让布局求解器把它们和已在画面上的对象分开。
@@ -544,6 +593,10 @@ class MoxianCompiler:
             return [Shift(built.node, delta, DEFAULT_DUR["move"])], DEFAULT_DUR["move"]
         if act == "camera":
             return self._camera(action, args), DEFAULT_DUR["camera"]
+        if act == "tween":
+            d = DEFAULT_DUR["tween"]
+            ease = easing.by_name(action.get("ease", "smooth"))
+            return [ParamTween(self.params[k], float(v), d, ease) for k, v in args.items()], d
         sel = selectors.parse(action["target"])
         built = self.objects[sel.obj]
         return built.widget.action(act, args), WIDGET_DUR
