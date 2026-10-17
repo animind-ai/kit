@@ -402,6 +402,9 @@ REGISTRY: dict[str, type[Widget]] = {
     "balance": __import__("animind_kit.mx.balance", fromlist=["Balance"]).Balance,  # 天平在 balance.py（解方程两边同时拿走）
     "plane": __import__("animind_kit.mx.plane", fromlist=["Plane"]).Plane,  # 坐标平面在 plane.py（向量、乘 i 转 90°、矩阵变形）
     "solid": __import__("animind_kit.mx.solid", fromlist=["Solid"]).Solid,  # 立体在 solid.py（轴测图、剖成三个四棱锥、截面）
+    "coin_flips": __import__("animind_kit.mx.chance", fromlist=["CoinFlips"]).CoinFlips,  # 随机试验在 chance.py（频率折线）
+    "galton": __import__("animind_kit.mx.chance", fromlist=["Galton"]).Galton,  # （高尔顿板）
+    "outcomes": __import__("animind_kit.mx.chance", fromlist=["Outcomes"]).Outcomes,  # （样本空间方格，条件概率）
 }
 
 

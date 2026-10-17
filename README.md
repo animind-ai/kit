@@ -22,6 +22,14 @@
   `label` 换盒子上的字，解方程"两边同时减"用。示例 `scene-spec/examples/ep19.scene.yaml`。
 - **立体** `mx/solid.py`（`solid`）：正方体、长方体、四棱锥、圆柱、圆锥的轴测图（淡色面、看不见的棱画虚线）；正方体剖成三个全等的四棱锥 `split` / `apart` / `join` / `unsplit`；
   截平面 `sweep` 扫过几个立体、`compare` 把截面平铺到旁边比大小（祖暅原理）；`set {role}` 换面和棱的颜色。示例 `scene-spec/examples/solids.scene.yaml`。
+- **坐标平面** `mx/plane.py`（`plane`）：淡网格 + 坐标轴（`complex: true` 时是复平面，纵轴写 i、2i），画在上面的东西都有名字：
+  `vector`（分量 v、尾巴 at）、`slide`（平移，`copy` 时滑过去的是虚线副本：首尾相接）、`point`（`fixed` 时钉在画面上不跟着变）、`shape`（填色多边形）、
+  `rotate`（绕原点转，写了 name 时画出扫过的弧；不写 name 是整个平面转）、`scale`、`warp`（`mesh: true` 的彩色网格连同所有箭头按矩阵变形，和之前的复合）、`reset`、`relabel`、`remove`。
+  名字和刻度垫了底色，网格线不穿字。向量加法、乘 i 转 90°、矩阵变形（洞察 #32–#34）用。
+- **随机试验** `mx/chance.py`：随机数都来自 `scene_spec.chance`（`random.Random(seed)`），旁白里说的数用动作的 `expect` 写出来，检查器按同一个 seed 核对。
+  `coin_flips`：抛硬币的频率折线（横轴对数刻度），`flip`（画到第 k 次，右上角写"正面 h/k"）、`runs`（再画几条别的 seed）、`band`（p ± 1/√k 的漏斗）；
+  `galton`：高尔顿板，`drop`（一批球依次落下、在格子里堆起来）、`path`（描出某个球的左右路线）、`pascal`（格子底下写路径数）、`expect`（二项分布的期望台阶）、`flat`（"每格一样"的水平线）、`erase`；
+  `outcomes`：样本空间方格，`shade` / `unshade`、`strike` / `restore`（划掉被条件排除的格子）、`frame` / `unframe`（描出剩下的样本空间）。抛硬币频率、高尔顿板、条件概率（洞察 #36–#38）用。
 - **墨线后端** `backends/moxian_backend.py` + `mx/`：对象树跨 beat 常驻，每个 beat 一条时间线；文字、组件、布局都在 `mx/` 里用墨线实现。动作按旁白句子和书签的时刻播放，画面跟不上旁白时打印 `CUE LATE`。
 - **Manim 后端** `backends/manim_backend.py` + `widgets/`：保留用于对照，每个 beat 一个 Scene。
 - **渲染** `render.py`：逐 beat 渲染，和旁白合成，拼成一支成片。
