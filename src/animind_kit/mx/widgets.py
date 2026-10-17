@@ -383,6 +383,7 @@ REGISTRY: dict[str, type[Widget]] = {
     "graph": __import__("animind_kit.mx.graph", fromlist=["Graph"]).Graph,  # 函数图像在 graph.py（割线、切线、放大）
     "number_line": __import__("animind_kit.mx.numberline", fromlist=["NumberLine"]).NumberLine,  # 数轴在 numberline.py（分数除法的跳跃）
     "dissect": __import__("animind_kit.mx.dissect", fromlist=["Dissect"]).Dissect,  # 剖分在 dissect.py（剪开、挪动、拼成新图形）
+    "area_grid": __import__("animind_kit.mx.grid", fromlist=["AreaGrid"]).AreaGrid,  # 格子正方形在 grid.py（分数乘法的交叠格）
 }
 
 

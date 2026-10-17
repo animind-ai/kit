@@ -11,6 +11,17 @@
 - mark_point：在某个数上点一个点，可以带标注；
 - erase：收起跳跃、剩余段、高亮和点，换下一个除数之前用。
 
+参数 unit（可选）：一个单位画多长（画面单位，默认 1.9）。range 只有 0–1 时写大一些（例如 9），数轴才铺满主讲区。
+参数 bars（可选，true）：在数字标注下方预留一条分数条的位置（bar / fill / group 动作用）。
+
+动作的可选参数（分数小系列 #6–#9 加的）：
+- jump：from（从哪儿起跳，默认起点）、keep（true 时不收起上一次的跳跃，几段接着走）、role（弧的颜色角色）、
+  numbers（false 时弧顶不标计数）；
+- highlight：role（垫色角色，默认 HL）、keep（true 时另画一段，不挪动已有的那段）；
+- mark_point：role（点和标注的颜色角色，默认 HL）；
+- bar：在轴下方画一条和 0..end 等长的分数条，每个单位分成 parts 格；fill：给 cells（"a:b"，从 0 数）涂 role 色；
+  group：从左往右每 size 格框成一组，依次出现，框上标 1、2、3…
+
 所有位置都用 fractions.Fraction 做精确运算（跳几次、剩多少、刻度落在哪），只在画图时才换成浮点。
 
 暴露的子元素（scene-spec 里登记的长度和这里一致）：
@@ -20,7 +31,8 @@
 - span：高亮段，一项；
 - jump / count：跳跃弧和弧顶的计数，长度是 measures 里最多能跳的整跳数，按当前这次 jump 依次填；
 - rest：剩余段（虚画的整跳 + 剩下那一小段 + 它的分数），一项；
-- point：mark_point 点出来的点，最多 POINTS 个。
+- point：mark_point 点出来的点，最多 POINTS 个；
+- strip / groups：分数条（bar / fill）和它的分组框（group），各一项。
 """
 
 from __future__ import annotations
@@ -192,12 +204,15 @@ class _FadeTo(Fade):
 class _Bar(Animation):
     """高亮段从当前范围滑到新范围（两端各自线性移动），同时淡到可见。"""
 
-    def __init__(self, bar: PathNode, x0: float, x1: float, height: float, duration: float = 0.6):
+    def __init__(self, bar: PathNode, x0: float, x1: float, height: float, duration: float = 0.6,
+                 fill: str | None = None):
         super().__init__(bar, duration, easing.smooth)
-        self.x0, self.x1, self.h = x0, x1, height
+        self.x0, self.x1, self.h, self.fill = x0, x1, height, fill
 
     def begin(self) -> None:
         super().begin()
+        if self.fill:  # 换色放在播放时：同一个 beat 里前面的动作还没播完
+            self.node.set_style(fill=self.fill)
         b = self.node.path.bbox()
         visible = (self.node.style or Style()).opacity > 0.01 and b is not None and b[2] - b[0] > 1e-6
         self.from_ = (b[0], b[2]) if visible else (self.x0, self.x0)
@@ -264,9 +279,12 @@ class NumberLine(Widget):
     LABEL, FRAC, COUNT = 34, 28, 30
     ARC_BASE = 0.06
     ARC_MAX = 0.85
+    BAR_GAP, BAR_H = 0.5, 0.5  # 分数条在分数标注下方多远、多高
 
     def build(self) -> Built:
         d, t = self.definition, self.theme
+        if d.get("unit") is not None:  # 0–1 这种短数轴要画得宽，按集指定一个单位的长度
+            self.UNIT = float(d["unit"])
         start, end = (frac(v) for v in d.get("range", [0, 1]))
         if start.denominator != 1 or end.denominator != 1 or end <= start:
             raise ValueError(f"number_line 的 range 要是两个整数且后者更大（对象 {self.obj_id}）")
@@ -290,9 +308,15 @@ class NumberLine(Widget):
                        style=Style(stroke=t.FG, stroke_width=3))
         # 看不见的占位框：跳跃弧和计数、分数标注都在里面，排版时整个组件的大小不随动作变化
         top = self.ARC_MAX + self.ARC_BASE + 0.7
-        reserve = PathNode(path=rect(x_end + 0.5, top + 1.15).transformed(T.translate((x_end - 0.5) / 2, (top - 1.15) / 2)),
+        bottom = 1.15 + (self.BAR_GAP + self.BAR_H + 0.55 if d.get("bars") else 0.0)
+        reserve = PathNode(path=rect(x_end + 0.5, top + bottom).transformed(T.translate((x_end - 0.5) / 2, (top - bottom) / 2)),
                            style=Style(opacity=0.0))
         self.bar = PathNode(path=rect(1e-4, 0.16), style=Style(fill=t.HL, fill_opacity=0.55, opacity=0.0), z=-1)
+        self.bars_kept: list[PathNode] = []
+        self.kept_jumps: list[Group] = []
+        self.strip = Group(name="strip")  # 分数条：格子、涂色、分组框
+        self.cells: list[PathNode] = []
+        self.groups = Group(name="groups")
 
         # 整数刻度和数字
         self.major: list[PathNode] = []
@@ -327,7 +351,8 @@ class NumberLine(Widget):
         self.rest_piece = Group(name="rest_piece")  # 剩下那一小段和它的分数（rest[0] 指向它）
         self.point_slots = [Group(name=f"point{i}") for i in range(POINTS)]
         node.add(reserve, self.bar, axis, tip, *self.units, *self.major, *self.labels, self.frac_group,
-                 self.jump_layer, self.rest_group, *self.point_slots)
+                 self.jump_layer, self.rest_group, *self.point_slots, self.strip, self.groups)
+        self.root_group = node
 
         slots = max_jumps(self.start, self.end, self.measures)
         self.parts_map: dict[str, list[Node]] = {
@@ -340,6 +365,8 @@ class NumberLine(Widget):
             "count": [Group() for _ in range(slots)],
             "rest": [self.rest_piece],
             "point": list(self.point_slots),
+            "strip": [self.strip],
+            "groups": [self.groups],
         }
         return Built(node, parts=self.parts_map)
 
@@ -395,51 +422,69 @@ class NumberLine(Widget):
 
     def action(self, act: str, args: dict) -> list[Animation]:
         if act == "jump":
-            return [self._jump(frac(args["length"]), args.get("count"))]
+            return [self._jump(frac(args["length"]), args.get("count"), frac(args.get("from", self.start)),
+                               bool(args.get("keep", False)), args.get("role"), bool(args.get("numbers", True)))]
         if act == "remainder":
             return [self._remainder()]
         if act == "subdivide":
             return [self._subdivide(int(args["parts"]))]
         if act == "highlight":
-            return [self._highlight(frac(args.get("from", self.start)), frac(args["to"]))]
+            return [self._highlight(frac(args.get("from", self.start)), frac(args["to"]), args.get("role"),
+                                    bool(args.get("keep", False)))]
         if act == "mark_point":
-            return [self._mark_point(frac(args["at"]), args.get("label"))]
+            return [self._mark_point(frac(args["at"]), args.get("label"), args.get("role"))]
+        if act == "bar":
+            return [self._strip(int(args["parts"]))]
+        if act == "fill":
+            return self._fill(str(args["cells"]), args.get("role"))
+        if act == "group":
+            return [self._group(int(args["size"]))]
         if act == "erase":
             return self._erase()
         raise KeyError(f"组件 {self.name} 没有动作 {act}")
 
-    def _jump(self, length: Fraction, count: int | None) -> Animation:
-        whole, left = jumps(self.start, self.end, length)
+    def _jump(self, length: Fraction, count: int | None, origin: Fraction | None = None, keep: bool = False,
+              role: str | None = None, numbers: bool = True) -> Animation:
+        origin = Fraction(self.start) if origin is None else origin
+        whole, left = jumps(origin, self.end, length)
         if count is not None:
             count = int(count)
             if count > len(whole):
                 raise ValueError(f"{self.obj_id}：长度 {length} 最多跳 {len(whole)} 次，不能跳 {count} 次")
-            left = Fraction(self.end - self.start) - count * length
+            left = Fraction(self.end) - origin - count * length
             whole = whole[:count]
         slots = len(self.parts_map["jump"])
         if len(whole) > slots:
             raise ValueError(f"{self.obj_id}：跳 {len(whole)} 次超过了预留的 {slots} 个（把 {length} 写进 measures）")
         extra: list[tuple[float, float, Animation]] = []
         head = 0.0
-        old = [n for n in (self.jump_set, self.rest_group) if n is not None and (n.style or Style()).opacity > 0]
+        if keep and self.jump_set is not None:
+            self.kept_jumps.append(self.jump_set)
+        old = [n for n in ((self.rest_group,) if keep else (self.jump_set, self.rest_group, *self.kept_jumps))
+               if n is not None and (n.style or Style()).opacity > 0]
+        if not keep:
+            self.kept_jumps = []
         if old:
             head = 0.12
             for n in old:
                 extra.append((0.0, head, _FadeTo(n, 0.0)))
         t, h = self.theme, self.arc_height(length)
+        ink = t.color(role, self.ink) if role else self.ink
+        num_role = role or self.definition.get("role") or "A"
         jump_set = Group(name=f"jumps{len(self.jump_layer.children)}")
         arcs, counts, steps = [], [], []
         for i, (a, b) in enumerate(whole):
-            arc = PathNode(path=self.arc(a, b), style=Style(stroke=self.ink, stroke_width=4, opacity=0.0))
-            head_node = PathNode(path=self.arrow_head(a, b), style=Style(stroke=self.ink, stroke_width=4, opacity=0.0))
-            num = mmath(str(i + 1), self.COUNT, t.ink(self.definition.get("role") or "A"))
-            num.move_to([(self.x(a) + self.x(b)) / 2, self.ARC_BASE + h + 0.3])
-            num.set_style(opacity=0.0)
+            arc = PathNode(path=self.arc(a, b), style=Style(stroke=ink, stroke_width=4, opacity=0.0))
+            head_node = PathNode(path=self.arrow_head(a, b), style=Style(stroke=ink, stroke_width=4, opacity=0.0))
+            num = mmath(str(i + 1), self.COUNT, t.ink(num_role)) if numbers else Group()
+            if numbers:
+                num.move_to([(self.x(a) + self.x(b)) / 2, self.ARC_BASE + h + 0.3])
+                num.set_style(opacity=0.0)
             jump = Group(arc, head_node, name=f"jump{i}")
             jump_set.add(jump, num)
             arcs.append(jump)
             counts.append(num)
-            steps.append([Draw(arc), _Late(_FadeTo(head_node, 1.0)), _FadeTo(num, 1.0)])
+            steps.append([Draw(arc), _Late(_FadeTo(head_node, 1.0))] + ([_FadeTo(num, 1.0)] if numbers else []))
         self.jump_layer.add(jump_set)
         self.jump_set = jump_set
         self.parts_map["jump"][:] = arcs + [Group() for _ in range(slots - len(arcs))]
@@ -504,31 +549,111 @@ class NumberLine(Widget):
         self.parts = parts
         return _Retick(slides, born, gone, labels_out, list(self.frac_labels))
 
-    def _highlight(self, a: Fraction, b: Fraction) -> Animation:
-        return _Bar(self.bar, self.x(a), self.x(b), 0.16)
+    def _highlight(self, a: Fraction, b: Fraction, role: str | None = None, keep: bool = False) -> Animation:
+        color = self.theme.color(role, self.theme.HL) if role else self.theme.HL
+        if keep:  # 动作在排时间线时就全部生成，不能看当前透明度：keep 一律另画一段
+            self.bars_kept.append(self.bar)
+            self.bar = PathNode(path=rect(1e-4, 0.16), style=Style(fill=color, fill_opacity=0.55, opacity=0.0), z=-1)
+            self.root_group.add(self.bar)
+            self.parts_map["span"][:] = [self.bar]
+        return _Bar(self.bar, self.x(a), self.x(b), 0.16, fill=color)
 
-    def _mark_point(self, at: Fraction, label: str | None) -> Animation:
+    def _mark_point(self, at: Fraction, label: str | None, role: str | None = None) -> Animation:
         if self.points_used >= POINTS:
             raise ValueError(f"{self.obj_id}：erase 之前最多点 {POINTS} 个点")
         slot = self.point_slots[self.points_used]
         self.points_used += 1
         slot.children.clear()  # erase 过的旧点（已经淡掉）
         t = self.theme
-        dot = PathNode(path=circle(0.09), style=Style(fill=t.HL_INK))
+        ink = t.HL_INK if role in (None, "HL") else t.color(role)
+        dot = PathNode(path=circle(0.09), style=Style(fill=ink))
         dot.matrix = T.translate(self.x(at), 0.0)
         slot.add(dot)
         if label:
-            lab = mmath(label, self.COUNT, t.HL_INK).move_to([self.x(at), -self.LABEL_Y + 0.05])
+            lab = mmath(label, self.COUNT, t.ink(role or "HL")).move_to([self.x(at), -self.LABEL_Y + 0.05])
             slot.add(lab)
         slot.set_style(opacity=0.0)
         return _FadeTo(slot, 1.0)
 
     def _erase(self) -> list[Animation]:
         anims: list[Animation] = []
-        for n in [self.jump_set, self.rest_group, self.bar, *self.point_slots]:
+        for n in [self.jump_set, *self.kept_jumps, self.rest_group, self.bar, *self.bars_kept, *self.point_slots,
+                  self.strip, self.groups]:
             if n is not None and (n.style or Style()).opacity > 0:
                 anims.append(_FadeTo(n, 0.0))
         self.jump_set = None
+        self.kept_jumps = []
+        self.bars_kept = []
         self.points_used = 0
         self.jumps, self.left, self.length = [], Fraction(0), None
         return anims or [_FadeTo(self.bar, 0.0)]
+
+    # ---- 分数条（轴下方，和 start..end 等长）----
+
+    def _strip_y(self) -> float:
+        return self.FRAC_Y - self.BAR_GAP - self.BAR_H / 2
+
+    def _strip(self, parts: int) -> Animation:
+        if not self.definition.get("bars"):
+            raise ValueError(f"{self.obj_id}：用 bar 动作要先在对象上写 bars: true（预留位置）")
+        t = self.theme
+        self.strip.children.clear()
+        self.groups.children.clear()
+        n = self.n_units * parts
+        w = self.UNIT / parts
+        y = self._strip_y()
+        self.cells = []
+        for k in range(n):
+            cell = PathNode(path=rect(w, self.BAR_H).transformed(T.translate((k + 0.5) * w, y)),
+                            style=Style(stroke=t.FG, stroke_width=2, fill=t.A, fill_opacity=0.0))
+            self.cells.append(cell)
+            self.strip.add(cell)
+        # 每个单位的边界画粗一点
+        for k in range(self.n_units + 1):
+            edge = PathNode(path=line(k * self.UNIT, y - self.BAR_H / 2, k * self.UNIT, y + self.BAR_H / 2),
+                            style=Style(stroke=t.FG, stroke_width=4))
+            self.strip.add(edge)
+        self.strip.set_style(opacity=0.0)
+        self.strip_parts = parts
+        return _FadeTo(self.strip, 1.0)
+
+    def _fill(self, cells: str, role: str | None) -> list[Animation]:
+        a, _, b = cells.partition(":")
+        start, stop = int(a or 0), int(b) if b else int(a) + 1
+        color = self.theme.color(role, self.theme.A)
+        out = []
+        for c in self.cells[start:stop]:
+            c.set_style(fill=color)
+            out.append(_FillTo(c, 0.6))
+        return out
+
+    def _group(self, size: int) -> Animation:
+        t = self.theme
+        y = self._strip_y()
+        w = self.UNIT / self.strip_parts
+        steps = []
+        for g in range(len(self.cells) // size):
+            x0, x1 = g * size * w, (g + 1) * size * w
+            box = PathNode(path=rect(x1 - x0 - 0.08, self.BAR_H + 0.16).transformed(T.translate((x0 + x1) / 2, y)),
+                           style=Style(stroke=t.HL_INK, stroke_width=4, opacity=0.0))
+            num = mmath(str(g + 1), self.FRAC, t.HL_INK).move_to([(x0 + x1) / 2, y - self.BAR_H / 2 - 0.3])
+            num.set_style(opacity=0.0)
+            self.groups.add(box, num)
+            steps.append([_FadeTo(box, 1.0), _FadeTo(num, 1.0)])
+        # 之前的 erase 可能把整组淡成了 0：先把容器亮回来，框再一个个出现
+        return _Sequence(steps, extra=[(0.0, 0.02, _FadeTo(self.groups, 1.0))])
+
+
+class _FillTo(Animation):
+    """格子的填充不透明度从当前值渐变到目标值。"""
+
+    def __init__(self, node: PathNode, end: float, duration: float = 0.5):
+        super().__init__(node, duration, easing.smooth)
+        self.end = end
+
+    def begin(self) -> None:
+        super().begin()
+        self.start = (self.node.style or Style()).fill_opacity
+
+    def interpolate(self, alpha: float) -> None:
+        self.node.set_style(fill_opacity=self.start + (self.end - self.start) * alpha)

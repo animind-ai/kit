@@ -71,7 +71,7 @@ def test_widget_registered_with_parts():
     assert widgets.lookup("number_line") is NumberLine
     m = NumberLine("line", DEF, T, {})
     sizes = {k: len(v) for k, v in m.built.parts.items()}
-    assert sizes == {"tick": 7, "label": 7, "unit": 6, "frac": 1, "span": 1, "jump": 9, "count": 9, "rest": 1, "point": 4}
+    assert sizes == {"tick": 7, "label": 7, "unit": 6, "frac": 1, "span": 1, "jump": 9, "count": 9, "rest": 1, "point": 4, "strip": 1, "groups": 1}
     xs = [float(t.matrix[0, 2]) for t in m.built.parts["tick"]]
     assert xs == pytest.approx([k * m.UNIT for k in range(7)])
 
@@ -116,3 +116,41 @@ def test_jump_errors():
         m.action("jump", {"length": "2/3", "count": 10})
     with pytest.raises(KeyError):
         m.action("flip", {})
+
+
+def test_unit_param_stretches_the_axis():
+    """0–1 的短数轴写 unit 后一个单位画得更长；默认值和类属性一致，别的实例不受影响。"""
+    wide = NumberLine("line", {**DEF, "range": [0, 1], "unit": 9}, T, {})
+    plain = NumberLine("line", {**DEF, "range": [0, 1]}, T, {})
+    assert wide.UNIT == 9 and plain.UNIT == NumberLine.UNIT
+    assert float(wide.built.parts["tick"][1].matrix[0, 2]) == pytest.approx(9.0)
+    assert wide.x(F(1, 2)) == pytest.approx(4.5)
+
+
+def test_keep_role_and_strip_actions():
+    """几段接着走（keep / from）、带角色的点和垫色、轴下方的分数条和分组框。"""
+    d = {**DEF, "range": [0, 1], "measures": ["1/2", "1/3", "1/6"], "bars": True}
+    m = NumberLine("line", d, T, {})
+    size_before = (m.node.width, m.node.height)
+    run(m.action("jump", {"length": "1/2", "count": 1, "numbers": False}))
+    first = m.jump_set
+    run(m.action("jump", {"length": "1/3", "count": 1, "from": "1/2", "keep": True, "role": "B"}))
+    assert first in m.kept_jumps and (first.style is None or first.style.opacity > 0)  # 第一段没被收起
+    end = m.built.parts["jump"][0].children[0].path.bbox()[2]
+    assert end / m.UNIT == pytest.approx(5 / 6)
+    run(m.action("highlight", {"to": "1/2", "role": "A"}))
+    run(m.action("highlight", {"from": "1/2", "to": "5/6", "role": "B", "keep": True}))
+    assert len(m.bars_kept) == 1
+    run(m.action("mark_point", {"at": "2/5", "role": "NO"}))
+    assert m.point_slots[0].children[0].style.fill == T.NO
+    run(m.action("bar", {"parts": 6}))
+    run(m.action("fill", {"cells": "0:3", "role": "A"}))
+    assert [round(c.style.fill_opacity, 2) for c in m.cells] == [0.6] * 3 + [0.0] * 3
+    run([m.action("group", {"size": 2})[0]])
+    assert len(m.groups.children) == 6  # 三组，每组一个框一个数
+    assert (m.node.width, m.node.height) == pytest.approx(size_before)  # bars: true 预留了位置
+    run(m.action("erase", {}))
+    assert m.strip.style.opacity == 0 and first.style.opacity == 0
+    run(m.action("bar", {"parts": 6}))  # erase 之后再分组：框要重新看得见
+    run(m.action("group", {"size": 3}))
+    assert m.groups.style.opacity == 1 and m.groups.children[0].style.opacity == 1
