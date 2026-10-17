@@ -49,6 +49,11 @@ class Widget:
     def focus(self, index: int | None) -> list[Animation] | None:
         return None
 
+    def restyle(self, sel, args: dict) -> list[Animation] | None:
+        """内置的 set {role, opacity} 指向组件的一部分时，组件可以自己处理（样式在子节点上、改组的 fill 不起作用时）；
+        返回 None 时后端按默认做法改目标节点的样式。"""
+        return None
+
 
 # ---------- 题卡 ----------
 
@@ -396,6 +401,7 @@ REGISTRY: dict[str, type[Widget]] = {
     "block_bars": __import__("animind_kit.mx.bars", fromlist=["BlockBars"]).BlockBars,  # 积木条形图在 bars.py（平均数削峰填谷）
     "balance": __import__("animind_kit.mx.balance", fromlist=["Balance"]).Balance,  # 天平在 balance.py（解方程两边同时拿走）
     "plane": __import__("animind_kit.mx.plane", fromlist=["Plane"]).Plane,  # 坐标平面在 plane.py（向量、乘 i 转 90°、矩阵变形）
+    "solid": __import__("animind_kit.mx.solid", fromlist=["Solid"]).Solid,  # 立体在 solid.py（轴测图、剖成三个四棱锥、截面）
 }
 
 

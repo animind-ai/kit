@@ -20,6 +20,8 @@
   `level` 画一条几块高的虚线并写标签、`unlevel`、`recolor`，平均数"削峰填谷"用。示例 `scene-spec/examples/ep35.scene.yaml`。
 - **天平** `mx/balance.py`（`balance`）：两个托盘放砝码和一个未知盒子，按重量自动倾斜；`remove` / `add` 一边或两边拿走、放上砝码，
   `label` 换盒子上的字，解方程"两边同时减"用。示例 `scene-spec/examples/ep19.scene.yaml`。
+- **立体** `mx/solid.py`（`solid`）：正方体、长方体、四棱锥、圆柱、圆锥的轴测图（淡色面、看不见的棱画虚线）；正方体剖成三个全等的四棱锥 `split` / `apart` / `join` / `unsplit`；
+  截平面 `sweep` 扫过几个立体、`compare` 把截面平铺到旁边比大小（祖暅原理）；`set {role}` 换面和棱的颜色。示例 `scene-spec/examples/solids.scene.yaml`。
 - **墨线后端** `backends/moxian_backend.py` + `mx/`：对象树跨 beat 常驻，每个 beat 一条时间线；文字、组件、布局都在 `mx/` 里用墨线实现。动作按旁白句子和书签的时刻播放，画面跟不上旁白时打印 `CUE LATE`。
 - **Manim 后端** `backends/manim_backend.py` + `widgets/`：保留用于对照，每个 beat 一个 Scene。
 - **渲染** `render.py`：逐 beat 渲染，和旁白合成，拼成一支成片。
@@ -27,7 +29,7 @@
 
 分段播放（`step` 子步定格、`ghost` 残影、`pin` 常驻，见 scene-spec 设计稿 §7.6）、字幕导出的定格顺延只有墨线后端实现；Manim 后端只导出字幕和章节。
 
-还没有：自动布局求解（现在只按约束摆放 + 检查）、三维、camera 动作、area_model 等洞察系列的原语、Whisper 词级时间戳（书签时刻按字符位置估算）。
+还没有：自动布局求解（现在只按约束摆放 + 检查）、三维（`solid` 是固定视角的轴测图，不能转视角）、camera 动作、area_model 等洞察系列的原语、Whisper 词级时间戳（书签时刻按字符位置估算）。
 
 ## 用法
 
