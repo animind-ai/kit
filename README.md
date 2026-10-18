@@ -18,6 +18,8 @@
   点阵 `rotate`（整体转 90°）、`extend`（补满到 10）、`fade_col`（淡出一列）、`squares`（点放进方格）、`recolor`。示例 `scene-spec/examples/numbers.scene.yaml`。
 - **积木条形图** `mx/bars.py`（`block_bars`）：每列几块方块，`transfer` 把顶上的块跳到另一列（块数跟着变）、`add` 在空位长出新列、
   `level` 画一条几块高的虚线并写标签、`unlevel`、`recolor`，平均数"削峰填谷"用。示例 `scene-spec/examples/ep35.scene.yaml`。
+- **钱包** `mx/wallet.py`（`wallet`）：上排现金、下排欠条，右边余额条；`put` 放进、`take` 拿走（欠条撕成两半落下，`quiet` 只淡出），
+  负负得正（撕欠条）和减去负数用。示例 `scene-spec/examples/ep15-iou.scene.yaml`。
 - **天平** `mx/balance.py`（`balance`）：两个托盘放砝码和一个未知盒子，按重量自动倾斜；`remove` / `add` 一边或两边拿走、放上砝码，
   `label` 换盒子上的字，解方程"两边同时减"用。示例 `scene-spec/examples/ep19.scene.yaml`。
 - **立体** `mx/solid.py`（`solid`）：正方体、长方体、四棱锥、圆柱、圆锥的轴测图（淡色面、看不见的棱画虚线）；正方体剖成三个全等的四棱锥 `split` / `apart` / `join` / `unsplit`；

@@ -400,6 +400,7 @@ REGISTRY: dict[str, type[Widget]] = {
     "dot_array": __import__("animind_kit.mx.dots", fromlist=["DotArray"]).DotArray,  # 点阵在 dots.py（转 90°、补满、淡出一列）
     "block_bars": __import__("animind_kit.mx.bars", fromlist=["BlockBars"]).BlockBars,  # 积木条形图在 bars.py（平均数削峰填谷）
     "balance": __import__("animind_kit.mx.balance", fromlist=["Balance"]).Balance,  # 天平在 balance.py（解方程两边同时拿走）
+    "wallet": __import__("animind_kit.mx.wallet", fromlist=["Wallet"]).Wallet,  # 钱包和余额条在 wallet.py（撕欠条：负负得正、减去负数）
     "plane": __import__("animind_kit.mx.plane", fromlist=["Plane"]).Plane,  # 坐标平面在 plane.py（向量、乘 i 转 90°、矩阵变形）
     "solid": __import__("animind_kit.mx.solid", fromlist=["Solid"]).Solid,  # 立体在 solid.py（轴测图、剖成三个四棱锥、截面）
     "coin_flips": __import__("animind_kit.mx.chance", fromlist=["CoinFlips"]).CoinFlips,  # 随机试验在 chance.py（频率折线）
