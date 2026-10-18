@@ -187,3 +187,14 @@ def test_short_english_is_split_like_the_chinese_cues():
     assert en_pieces("Half a turn is times negative one. What would a quarter turn be?", 2) == [
         "Half a turn is times negative one.", "What would a quarter turn be?"]
     assert en_pieces("Yes, really.", 2) == ["Yes, really."]  # 词太少就不切
+
+
+def test_equal_counts_pair_in_order():
+    """中文切成一长一短两条、英文也是两段时，按顺序一条一段，不会两条都挂整句（#15 第 3 版 Landing）。"""
+    from animind_kit.subtitles import Cue, _attach_en
+    shown = "四行放在一起看，放进现金和拿走欠条，余额都往上涨"
+    cut = shown.index("余额")
+    cues = [Cue(0.0, 1.0, shown[:cut]), Cue(1.0, 2.0, shown[cut:])]
+    en = "Put the four lines together: putting in cash and taking away IOUs both raise the balance."
+    _attach_en(cues, shown, [(0, cut), (cut, len(shown))], en)
+    assert cues[0].en != cues[1].en and (cues[0].en + " " + cues[1].en).split() == en.split()

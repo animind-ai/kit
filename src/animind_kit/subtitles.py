@@ -311,6 +311,9 @@ def _attach_en(cues: list[Cue], shown: str, spans: list[tuple[int, int]], en: st
     for a, b in spans:
         mid = (a + b) / 2 / max(1, len(shown))
         picked.append(next(i for i, edge in enumerate(bounds) if mid <= edge + 1e-9))
+    if len(pieces) == len(cues):
+        # 段数和中文条数一样：一条一段按顺序配。按中点比例配时，长短悬殊的两条会落到同一段，整句英文就挂了两遍
+        picked = list(range(len(cues)))
     # 没被任何中文条取到的英文段，并进前一段（或后一段），不丢字
     used = sorted(set(picked))
     merged = {}
