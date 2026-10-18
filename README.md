@@ -22,6 +22,10 @@
   `label` 换盒子上的字，解方程"两边同时减"用。示例 `scene-spec/examples/ep19.scene.yaml`。
 - **立体** `mx/solid.py`（`solid`）：正方体、长方体、四棱锥、圆柱、圆锥的轴测图（淡色面、看不见的棱画虚线）；正方体剖成三个全等的四棱锥 `split` / `apart` / `join` / `unsplit`；
   截平面 `sweep` 扫过几个立体、`compare` 把截面平铺到旁边比大小（祖暅原理）；`set {role}` 换面和棱的颜色。示例 `scene-spec/examples/solids.scene.yaml`。
+- **剖分** `mx/dissect.py`（`dissect`）：多边形、圆、扇形、点阵按直线 / 折线 / 扇形切开，块可以 `cut`、`shift`、`rotate`、`flip`、`snap`（边对边吸附）、`copy`、`merge`（拼合外轮廓）、`arrange`（扇形交错排开），
+  几何和检查都来自 `scene_spec.dissect`。`fold {cut, flap, back?}`：沿一刀 `line` 切法的切线把 `flap` 那几块翻到另一侧（没切过就先切）——
+  翻的那侧在垂直于折痕的方向从 1 压到 −1，中途变暗，`back` 是翻过来露出的背面颜色，落下后放在最上层；折纸、轴对称、角平分线用。
+  示例 `scene-spec/examples/ep11.scene.yaml`（剪开挪过去）、`ep20-fold.scene.yaml`（等腰直角三角形折两次，√2 无理）。
 - **坐标平面** `mx/plane.py`（`plane`）：淡网格 + 坐标轴（`complex: true` 时是复平面，纵轴写 i、2i），画在上面的东西都有名字：
   `vector`（分量 v、尾巴 at）、`slide`（平移，`copy` 时滑过去的是虚线副本：首尾相接）、`point`（`fixed` 时钉在画面上不跟着变）、`shape`（填色多边形）、
   `rotate`（绕原点转，写了 name 时画出扫过的弧；不写 name 是整个平面转）、`scale`、`warp`（`mesh: true` 的彩色网格连同所有箭头按矩阵变形，和之前的复合）、`reset`、`relabel`、`remove`。

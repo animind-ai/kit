@@ -128,3 +128,60 @@ def test_bad_definition_raises_with_code():
     bad = {**PARA, "cuts": {"c1": {"piece": "P", "line": [[20, 0], [20, 3]], "into": ["T", "Q"]}}}
     with pytest.raises(ValueError, match="SS423"):
         make(bad)
+
+
+# ---------- fold ----------
+
+R2 = np.sqrt(2)
+TRI = {
+    "widget": "dissect", "in": "stage",
+    "shapes": {"T": {"polygon": [[0, 0], [5, 0], [0, 5]]}},
+    "cuts": {"f1": {"piece": "T", "line": [[0, 5], [5 * (R2 - 1), 0]], "into": ["flap", "rest"]}},
+    "guides": {"g": {"from": [0, 0], "to": [5, 0]}},
+}
+
+
+def test_fold_lands_leg_on_hypotenuse():
+    w = make(TRI)
+    play(w.action("fold", {"cut": "f1", "flap": "flap"}))
+    assert w.nodes["T"].style.opacity == 0 and w.nodes["flap"].style.opacity == 1
+    d = 5 * (R2 - 1)
+    e = (5 / R2, 5 - 5 / R2)  # 直角顶点落在斜边上、离 A 为 5 的地方
+    got = world(w, "flap")
+    for want in [(0, 5), (d, 0), e]:
+        assert any(np.allclose(want, g, atol=1e-6) for g in got)
+    np.testing.assert_allclose(w.nodes["flap"].matrix, w.pose["flap"])
+    np.testing.assert_allclose(w.nodes["rest"].matrix, np.eye(3))
+    assert np.linalg.det(w.pose["flap"][:2, :2]) == pytest.approx(-1)
+
+
+def test_fold_shades_mid_turn_and_ends_on_back_colour():
+    w = make(TRI)
+    [anim] = w.action("fold", {"cut": "f1", "flap": "flap", "back": "B"})
+    shape = w.shapes["flap"][0]
+    front = shape.style.fill
+    anim.begin()
+    anim.interpolate(0.21)  # 切开了，刚开始翻
+    anim.interpolate(0.4)
+    mid = shape.style.fill
+    assert mid not in (front, T.B)  # 翻到一半：混了黑色
+    anim.finish()
+    assert shape.style.fill == T.B and shape.style.stroke == T.B
+    # 翻过来的块在最上层，但压不过参考线
+    assert w.nodes["flap"].z > w.nodes["rest"].z
+    assert w.guide_nodes["g"].z > w.nodes["flap"].z
+
+
+def test_fold_back_returns_flap_and_fold_after_cut_uses_current_pose():
+    w = make(TRI)
+    play(w.action("fold", {"cut": "f1", "flap": "flap"}))
+    play(w.action("fold", {"cut": "f1", "flap": "flap"}))
+    np.testing.assert_allclose(w.nodes["flap"].matrix, np.eye(3), atol=1e-9)
+    w2 = make(TRI)
+    play(w2.action("cut", {"cut": "f1"}))
+    play(w2.action("shift", {"piece": "flap", "by": [-2, 0]}))
+    play(w2.action("fold", {"cut": "f1", "flap": "flap"}))
+    # 折痕跟着块走：翻完以后 A 点和 D 点还在原地（各挪了 -2）
+    got = world(w2, "flap")
+    for want in [(-2, 5), (5 * (R2 - 1) - 2, 0)]:
+        assert any(np.allclose(want, g, atol=1e-6) for g in got)

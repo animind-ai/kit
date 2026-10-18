@@ -9,12 +9,13 @@
       └ fig（图形坐标 → 画面：缩放 k、把 view 的中心移到原点）
           ├ frame   看不见的 view 矩形，给布局占位（块挪到哪都不出这块地方）
           ├ 各块    Group，matrix = 位姿；里面是形状和标签（标签每帧反变换回来，始终正立、字号不变）
-          ├ 切口    虚线，cut 时短暂出现
+          ├ 切口    虚线，cut / fold 时短暂出现
           ├ 参考线  虚线 + 标签（show obj#名字）
           └ 轮廓    merge 时画出的外轮廓 + 标签
 
 暴露的片段（obj#名字）：每一块、每条参考线、每个合并轮廓，所以内置的 show / hide / focus / mark 都能直接用。
 动作在编译时按顺序推演位姿，动画只在播放时把节点推到编译时算好的位置；块之间在移动途中重叠是预期的。
+颜色、叠放次序（fold 把翻过来的块放到最上面）也只在播放时改：动作在排时间线时就全部生成了。
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ import math
 
 import numpy as np
 from moxian.anim import Animation, easing
+from moxian.anim.animation import _lerp_color
 from moxian.core import Group, Node, PathNode, Style
 from moxian.core import transform as T
 from moxian.path import Path as VPath
@@ -38,6 +40,8 @@ STROKE = 3.0
 DASH, GAP = 0.16, 0.11  # 虚线（画面单位）
 LABEL_GAP = 0.1  # 边长标签离边的距离（画面单位）
 DOT = 0.1
+FOLD_SHADE = 0.35  # fold 翻到一半时形状往黑色混多少（像纸侧过去变暗）
+TOP = 1000  # 切口、参考线、轮廓的叠放次序：fold 把块一层层往上放，也压不过它们
 
 
 def mat(a: G.Aff) -> np.ndarray:
@@ -118,6 +122,48 @@ class _Pose(Animation):
         self.widget.sync_labels(self.name, fade=self.flip)
 
 
+def mirror_fn(start: np.ndarray, p, q):
+    """关于直线 pq 翻过去的位姿：垂直于 pq 的方向从 1 压到 -1（中途看起来是侧着的一条线）。"""
+    p, q = np.asarray(p, dtype=float), np.asarray(q, dtype=float)
+    u = (q - p) / np.linalg.norm(q - p)
+    Q = np.array([[u[0], -u[1], 0.0], [u[1], u[0], 0.0], [0.0, 0.0, 1.0]])
+
+    def fn(alpha: float) -> np.ndarray:
+        s = math.cos(math.pi * alpha)
+        return T.translate(*p) @ Q @ np.diag([1.0, s, 1.0]) @ Q.T @ T.translate(*(-p)) @ start
+
+    return fn
+
+
+def _mix(color: str | None, other: str | None, t: float) -> str | None:
+    if color is None or other is None:
+        return color
+    return _lerp_color(color, other, t)
+
+
+class _Fold(_Pose):
+    """fold 里一块翻过去：位姿同 flip，另外按 sin(πα) 往黑色混一点；写了 back 时过了一半换成背面的颜色。
+    原来的颜色在 begin() 时读（之前的 set 可能已经改过）。"""
+
+    def __init__(self, widget: Dissect, name: str, fn, back: str | None):
+        super().__init__(widget, name, fn, flip=True)
+        self.back = back
+
+    def begin(self) -> None:
+        super().begin()
+        self.shapes = self.widget.shapes[self.name]
+        self.base = [(n.style.fill, n.style.stroke) for n in self.shapes]
+
+    def interpolate(self, alpha: float) -> None:
+        super().interpolate(alpha)
+        shade = FOLD_SHADE * math.sin(math.pi * alpha)
+        for node, (fill, stroke) in zip(self.shapes, self.base):
+            if self.back is not None and alpha >= 0.5:
+                fill = self.back if fill is not None else None
+                stroke = self.back if stroke is not None else None
+            node.set_style(fill=_mix(fill, "#000000", shade), stroke=_mix(stroke, "#000000", shade))
+
+
 class _Staged(Animation):
     """若干 (开始, 结束, 动画) 按整段时长的比例播放；各自用自己的缓动。"""
 
@@ -195,6 +241,8 @@ class Dissect(Widget):
         fig.add(frame)
 
         self.nodes: dict[str, Group] = {}
+        self.shapes: dict[str, list[PathNode]] = {}  # 每块的形状节点（不含标签）：fold 改它们的颜色
+        self.z_top = 0
         self.labels: dict[str, list[_Label]] = {}
         self.label_on: dict[str, bool] = {}
         self.pose: dict[str, np.ndarray] = {}
@@ -213,12 +261,15 @@ class Dissect(Widget):
             g = Group(PathNode(path=dashed(cut.lines, DASH / k, GAP / k),
                                style=Style(stroke=t.FG, stroke_width=2.5)), name=f"cut:{cname}")
             g.set_style(opacity=0.0)
+            g.z = TOP
             fig.add(g)
             self.cut_nodes[cname] = g
 
         self.guide_nodes: dict[str, Group] = {}
         for gname, spec in plan.guides.items():
-            fig.add(self._guide_node(gname, spec))
+            g = self._guide_node(gname, spec)
+            g.z = TOP
+            fig.add(g)
 
         self.merge_nodes: dict[str, Group] = {}
         for mname, spec in plan.merges.items():
@@ -226,6 +277,7 @@ class Dissect(Widget):
             if spec.get("label"):
                 g.add(self._text(spec["label"], spec.get("role", "HL")))
             g.set_style(opacity=0.0)
+            g.z = TOP
             fig.add(g)
             self.merge_nodes[mname] = g
 
@@ -271,6 +323,7 @@ class Dissect(Widget):
             width = STROKE if piece.kind == "poly" else 2.0
             group.add(PathNode(path=piece_path(piece),
                                style=Style(fill=color, fill_opacity=t.fill_opacity(), stroke=color, stroke_width=width)))
+        self.shapes[name] = list(group.children)
         style = self.plan.styles.get(name, {})
         labels: list[_Label] = []
         if style.get("label"):
@@ -366,19 +419,16 @@ class Dissect(Widget):
     def _center_of(self, pose: np.ndarray, name: str) -> np.ndarray:
         return apply(pose, self.plan.pieces[name].center())
 
-    def _act_cut(self, args: dict) -> list[Animation]:
-        cut = self.plan.cuts[args["cut"]]
+    def _split(self, cut: G.Cut) -> tuple[np.ndarray, Group, _Call]:
+        """切开：编译时更新位姿和"现在有哪些块"，返回 (被切那块的位姿, 切口虚线, 播放时把它换成几块的动作)。"""
         parent = cut.piece
         pose = self.pose[parent].copy()
-        spread = float(args.get("spread", 0.0))
         dash = self.cut_nodes[cut.name]
         dash.matrix = pose
         children = list(cut.into)
         self.alive.discard(parent)
         self.alive |= set(children)
         self._refresh_items()
-        pc = self._center_of(pose, parent)
-        anims: list[tuple[float, float, Animation]] = [(0.0, 0.3, _Opacity(dash, 0.0, 1.0))]
 
         def swap() -> None:
             self.nodes[parent].set_style(opacity=0.0)
@@ -387,9 +437,17 @@ class Dissect(Widget):
                 self.nodes[c].set_style(opacity=1.0)
                 self.sync_labels(c)
 
-        anims.append((0.3, 0.31, _Call(swap)))
         for c in children:
             self.pose[c] = pose.copy()
+        return pose, dash, _Call(swap)
+
+    def _act_cut(self, args: dict) -> list[Animation]:
+        cut = self.plan.cuts[args["cut"]]
+        spread = float(args.get("spread", 0.0))
+        pc = self._center(cut.piece)
+        pose, dash, swap = self._split(cut)
+        anims: list[tuple[float, float, Animation]] = [(0.0, 0.3, _Opacity(dash, 0.0, 1.0)), (0.3, 0.31, swap)]
+        for c in cut.into:
             if spread > 0:
                 v = self._center_of(pose, c) - pc
                 v = v / (np.linalg.norm(v) or 1.0) * spread
@@ -433,16 +491,35 @@ class Dissect(Widget):
             p, q = apply(start, axis["edge"][0]), apply(start, axis["edge"][1])
         else:
             p, q = np.array(axis[0], dtype=float), np.array(axis[1], dtype=float)
-        u = (q - p) / np.linalg.norm(q - p)
-        Q = np.array([[u[0], -u[1], 0.0], [u[1], u[0], 0.0], [0.0, 0.0, 1.0]])
-
-        def fn(alpha: float) -> np.ndarray:
-            # 绕轴"翻过去"：垂直于轴的方向从 1 压到 -1（中途看起来是侧着的一条线）
-            s = math.cos(math.pi * alpha)
-            return T.translate(*p) @ Q @ np.diag([1.0, s, 1.0]) @ Q.T @ T.translate(*(-p)) @ start
-
+        fn = mirror_fn(start, p, q)
         self.pose[name] = fn(1.0)
         return [_Pose(self, name, fn, flip=True)]
+
+    def _act_fold(self, args: dict) -> list[Animation]:
+        """沿 line 切法的切线把 flap 翻到另一侧（切法没切过就先切）：折痕虚线亮起 → 翻过去（变暗再变亮）→ 虚线淡出。
+        翻过去的块放到最上层，像纸叠在上面。"""
+        cut = self.plan.cuts[args["cut"]]
+        flaps = [args["flap"]] if isinstance(args["flap"], str) else list(args["flap"])
+        back = self.theme.color(args["back"]) if "back" in args else None
+        windows: list[tuple[float, float, Animation]] = []
+        if cut.piece in self.alive:
+            ref, dash, swap = self._split(cut)
+            windows += [(0.0, 0.2, _Opacity(dash, 0.0, 1.0)), (0.2, 0.21, swap)]
+        else:
+            ref = self.pose[flaps[0]]
+            dash = self.cut_nodes[cut.name]
+            windows.append((0.0, 0.01, _Call(lambda: setattr(dash, "matrix", ref.copy()))))
+            windows.append((0.0, 0.2, _Opacity(dash, 0.0, 1.0)))
+        p, q = apply(ref, cut.crease[0]), apply(ref, cut.crease[1])
+        for f in flaps:
+            self.z_top += 1
+            z = self.z_top
+            windows.append((0.2, 0.21, _Call(lambda f=f, z=z: setattr(self.nodes[f], "z", z))))
+            fn = mirror_fn(self.pose[f], p, q)
+            self.pose[f] = fn(1.0)
+            windows.append((0.2, 0.9, _Fold(self, f, fn, back)))
+        windows.append((0.85, 1.0, _Opacity(dash, 1.0, 0.0)))
+        return [_Staged(windows)]
 
     def _act_snap(self, args: dict) -> list[Animation]:
         name = args["piece"]
