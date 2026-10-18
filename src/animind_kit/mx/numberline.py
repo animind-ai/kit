@@ -60,7 +60,7 @@ from moxian.path import Path, circle, line, rect
 from .text import mmath
 from .widgets import Built, Widget
 
-POINTS = 4
+POINTS = 8
 
 Number = int | str | Fraction
 

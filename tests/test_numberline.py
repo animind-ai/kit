@@ -71,7 +71,7 @@ def test_widget_registered_with_parts():
     assert widgets.lookup("number_line") is NumberLine
     m = NumberLine("line", DEF, T, {})
     sizes = {k: len(v) for k, v in m.built.parts.items()}
-    assert sizes == {"tick": 7, "label": 7, "unit": 6, "frac": 1, "span": 1, "jump": 9, "count": 9, "rest": 1, "point": 4, "strip": 1, "groups": 1, "arrows": 1, "turns": 1}
+    assert sizes == {"tick": 7, "label": 7, "unit": 6, "frac": 1, "span": 1, "jump": 9, "count": 9, "rest": 1, "point": 8, "strip": 1, "groups": 1, "arrows": 1, "turns": 1}
     xs = [float(t.matrix[0, 2]) for t in m.built.parts["tick"]]
     assert xs == pytest.approx([k * m.UNIT for k in range(7)])
 
@@ -212,3 +212,13 @@ def test_keep_leaves_a_faint_copy_and_erase_clears():
     assert first.style.opacity == pytest.approx(0.3) and line.arrow.style.opacity == 1.0
     run(line._erase())
     assert all(n.style.opacity == 0.0 for n in line.arrow_layer.children) and line.arrow is None
+
+
+def test_signposts_up_to_eight_points():
+    # 差分 #39：路标 0、1、4、9、16、25 六个点，erase 之前都要点得出来；第九个才报错
+    m = NumberLine("road", {"widget": "number_line", "range": [0, 25], "measures": ["1"]}, T, {})
+    for at in (0, 1, 4, 9, 16, 25, 2, 3):
+        run(m.action("mark_point", {"at": at}))
+    assert all(slot.children for slot in m.point_slots)
+    with pytest.raises(ValueError):
+        m.action("mark_point", {"at": 5})
