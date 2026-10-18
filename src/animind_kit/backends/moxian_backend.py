@@ -547,7 +547,10 @@ class MoxianCompiler:
             spoken = bt.total + frozen + 0.5 if beat.get("say") else 0.0
         self.beat_info[beat["id"]] = {
             "cues": [{"start": segments.to_video(s.start, tl.freezes), "end": segments.to_video(s.end, tl.freezes),
-                      "marks": {k: segments.to_video(v, tl.freezes) for k, v in s.marks.items()}} for s in bt.sentences],
+                      "marks": {k: segments.to_video(v, tl.freezes) for k, v in s.marks.items()},
+                      "words": s.words and {"n": s.words["n"],
+                                            "at": [[i, segments.to_video(w, tl.freezes)] for i, w in s.words["at"]]}}
+                     for s in bt.sentences],
             "steps": [{"time": round(t, 3), "hold": f.hold, "at": f.ref}
                       for f, t in zip(sorted(freezes, key=lambda f: f.at), segments.freeze_starts(freezes))],
         }

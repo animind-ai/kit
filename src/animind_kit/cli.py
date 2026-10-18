@@ -1,6 +1,6 @@
 """命令行：
-    animind-kit render 场景文件 --out 成片 [--audio 目录] [--quality l|m|h]
-    animind-kit inspect 场景文件 [--beat X] [--out 分镜图目录] [--audio 目录]
+    animind-kit render 场景文件 --out 成片 [--audio 目录] [--quality l|m|h] [--lang en]
+    animind-kit inspect 场景文件 [--beat X] [--out 分镜图目录] [--audio 目录] [--lang en]
 """
 
 from __future__ import annotations
@@ -36,6 +36,9 @@ def main(argv: list[str] | None = None) -> int:
     i.add_argument("--no-sheets", action="store_true", help="只打印问题，不出分镜图")
     i.add_argument("--audio", type=Path, help="旁白目录：用真实时长（没有就按字数估算）")
     i.add_argument("--quality", choices=["l", "m", "h"], default="m", help="和 render 用同一档，采样才落在同一帧")
+    for cmd in (r, i):
+        cmd.add_argument("--lang", choices=["zh", "en"], default="zh",
+                         help="渲染哪种语言的版本（场景文件里每句的 en + i18n.en），旁白目录要是同一语言合成的")
     g = sub.add_parser("regress", help="截图回归：渲染示例末帧，和 tests/baseline 比对")
     g.add_argument("--update", action="store_true", help="用当前结果覆盖基准图")
     args = parser.parse_args(argv)
@@ -60,7 +63,7 @@ def main(argv: list[str] | None = None) -> int:
 
         name = args.spec.name.removesuffix(".yaml").removesuffix(".scene")
         out = None if args.no_sheets else (args.out or Path("build/inspect") / name)
-        problems = inspect(args.spec, args.audio, out, args.beat, args.quality)
+        problems = inspect(args.spec, args.audio, out, args.beat, args.quality, lang=args.lang)
         return 1 if problems else 0
 
     if args.command == "compare":
@@ -72,7 +75,8 @@ def main(argv: list[str] | None = None) -> int:
     from .render import render
 
     summary = render(args.spec, args.out, args.audio, args.quality, backend=args.backend,
-                     burn_subtitles=args.burn_subtitles, theme_name=args.theme, subtitles=args.subtitles)
+                     burn_subtitles=args.burn_subtitles, theme_name=args.theme, subtitles=args.subtitles,
+                     lang=args.lang)
     return 1 if summary["layout_problems"] else 0
 
 

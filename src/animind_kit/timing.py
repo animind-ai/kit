@@ -3,6 +3,7 @@
 时间来自 animind-voice 写出的 <beat>.timing.json：
     {"cues": [{"start": 0.3, "end": 6.7}, ...], "total": 27.03, "marks": {"s1": {"d0": 5.01}}}
 有 marks（animind-voice align 的 Whisper 对齐结果）就用真实书签时刻；没有就按字符位置比例估算。
+align 还写 "words": {"s1": {"n": 42, "at": [[字序号, 时刻], ...]}}（词首的真实时刻），字幕切条用它定时。
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ class Sentence:
     start: float
     end: float
     marks: dict[str, float] = field(default_factory=dict)
+    words: dict | None = None  # {"n": 稿子参与对齐的字数, "at": [[第几个字, 时刻], ...]}
 
 
 @dataclass
@@ -61,12 +63,14 @@ def load(beat: dict, audio_dir: Path | None) -> BeatTiming:
     say = beat.get("say", [])
     cues, total, source = None, None, "estimated"
     aligned: dict[str, dict[str, float]] = {}
+    words: dict[str, dict] = {}
     if audio_dir is not None:
         path = audio_dir / f"{beat['id']}.timing.json"
         if path.exists():
             data = json.loads(path.read_text(encoding="utf-8"))
             cues, total, source = data["cues"], data["total"], "audio"
             aligned = data.get("marks", {})  # animind-voice align 写入的真实书签时刻
+            words = data.get("words", {})
             if len(cues) != len(say):
                 raise ValueError(f"{path.name} 有 {len(cues)} 句，scene 里 {beat['id']} 有 {len(say)} 句")
     if cues is None:  # 没有音频：按每个汉字 0.22 秒估
@@ -82,7 +86,7 @@ def load(beat: dict, audio_dir: Path | None) -> BeatTiming:
         marks = {name: cue["start"] + frac * span for name, frac in _mark_fractions(s["text"]).items()}
         real = aligned.get(s.get("id") or str(i), {})
         marks.update({k: v for k, v in real.items() if k in marks})
-        sentences.append(Sentence(s.get("id"), cue["start"], cue["end"], marks))
+        sentences.append(Sentence(s.get("id"), cue["start"], cue["end"], marks, words.get(s.get("id") or str(i))))
     if aligned:
         source = "aligned"
     hold = beat.get("pause", {}).get("hold", 0) if "pause" in beat else 0

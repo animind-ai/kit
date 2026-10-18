@@ -90,6 +90,7 @@ class CoinFlips(Widget):
         self.acted = False
         self.label_size = float(self.opts.get("label_size", self.LABEL))
         self.n, self.seed, self.p = int(d["n"]), int(d["seed"]), float(d.get("p", 0.5))
+        self.heads = d.get("heads_text", "正面")  # 读数的前缀，英文版写 Heads
         self.flips = coin_flips(self.seed, self.n, self.p)
         self.points = self.trace_points(self.flips)
         node = Group(name=self.obj_id)
@@ -116,7 +117,7 @@ class CoinFlips(Widget):
         self.line = PathNode(path=Path(), style=Style(stroke=t.A, stroke_width=5, opacity=0.0), name="line")
         self.dot = PathNode(path=circle(0.09), style=Style(fill=t.A, opacity=0.0))
         self.readout = Group(name="readout")
-        top = H + 0.3 + rich("正面", t, size=self.label_size, color=t.A).node.height + 0.1
+        top = H + 0.3 + rich(self.heads, t, size=self.label_size, color=t.A).node.height + 0.1
         bottom = -0.3 - num_h
         left = -0.4 - mmath(r"\dfrac{1}{2}", self.label_size, t.FG).width
         right = W + 0.35
@@ -155,7 +156,7 @@ class CoinFlips(Widget):
             k0, self.at = self.at, k1
             h = sum(self.flips[:k1])
             out: list[Animation] = [FadeTo(old, 0.0, 0.3) for old in self.readout.children]
-            text = rich(f"正面 ${h}/{k1}$", t, size=self.label_size, color=t.A).node
+            text = rich(f"{self.heads} ${h}/{k1}$", t, size=self.label_size, color=t.A).node
             text.font_floor = self.label_floor
             self.place(text, (self.W, self.top_y), (-1.0, 1.0))
             text.set_style(opacity=0.0)

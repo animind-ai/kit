@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -25,10 +26,12 @@ MODES = ("burned", "soft", "none")
 DEFAULT = "burned"  # 2026-10-17 定：字幕默认开（烧进画面）
 MAX_UNITS = 18.0
 EN_MAX = 64  # 英文字幕每段最多几个字符
+EN_LINE = 44  # 英文版（字幕只有英文一行、字号和中文一样）每条最多几个字符
 MIN_SECONDS = 0.5
 BREAK = set("，。！？；：、!?;")
 DROP_TAIL = set("，。；：、,;:")
 _BOOKMARK = re.compile(r"\{@([A-Za-z_][A-Za-z0-9_]*)\}")
+_CJK = re.compile(r"[\u3400-\u9fff]")
 _MATH = re.compile(r"(?<!\\)\$(.+?)(?<!\\)\$")
 
 # ---------- LaTeX → Unicode ----------
@@ -237,7 +240,7 @@ def chunks(text: str, limit: float = MAX_UNITS) -> list[tuple[int, int]]:
     """按标点切成小句，再贪心合并，每条不超过 limit 个字宽。返回 [起, 止) 字符下标。"""
     clauses, start = [], 0
     for i, ch in enumerate(text):
-        if ch in BREAK:
+        if ch in BREAK or (ch in ",." and text[i + 1:i + 2] == " "):  # 英文的逗号、句号后面跟空格才算断句
             clauses.append((start, i + 1))
             start = i + 1
     if start < len(text):
@@ -258,6 +261,38 @@ def chunks(text: str, limit: float = MAX_UNITS) -> list[tuple[int, int]]:
     merged: list[tuple[int, int]] = []
     for a, b in pieces:
         if merged and units(text[merged[-1][0]:b].strip().rstrip("".join(DROP_TAIL))) <= limit:
+            merged[-1] = (merged[-1][0], b)
+        else:
+            merged.append((a, b))
+    return merged
+
+
+def en_chunks(text: str, limit: int = EN_LINE) -> list[tuple[int, int]]:
+    """英文版（一行英文）的切条：先在标点后切成小句，再贪心合并到 limit 个字符；太长的小句按词均分，不留一两个词的尾巴。"""
+    clauses, start = [], 0
+    for m in re.finditer(r"[,.;:?!](?=\s)", text):
+        clauses.append((start, m.end()))
+        start = m.end()
+    if start < len(text):
+        clauses.append((start, len(text)))
+    pieces: list[tuple[int, int]] = []
+    for a, b in clauses:
+        words = [(m.start() + a, m.end() + a) for m in re.finditer(r"\S+", text[a:b])]
+        size = text[a:b].strip()
+        k = -(-len(size) // limit)
+        if k <= 1 or not words:
+            pieces.append((a, b))
+            continue
+        target, cur = len(size) / k, words[0][0]
+        for i, (_, w1) in enumerate(words[:-1]):
+            if w1 - cur >= target and len(words) - i - 1 >= 2:
+                pieces.append((cur, w1))
+                cur = words[i + 1][0]
+        pieces.append((cur, b))
+    merged: list[tuple[int, int]] = []
+    for a, b in pieces:  # 不跨句号、问号合并：两句之间 TTS 会停顿，并成一条字幕会在停顿里挂着
+        prev = text[merged[-1][0]:merged[-1][1]].rstrip() if merged else ""
+        if prev and prev[-1] not in ".?!" and len(text[merged[-1][0]:b].strip()) <= limit:
             merged[-1] = (merged[-1][0], b)
         else:
             merged.append((a, b))
@@ -324,19 +359,30 @@ def _attach_en(cues: list[Cue], shown: str, spans: list[tuple[int, int]], en: st
         cue.en = merged[i]
 
 
+def _content(ch: str) -> bool:
+    """和 animind-voice 对齐时一样的"字"：去掉空白、标点、符号。"""
+    return not ch.isspace() and unicodedata.category(ch)[0] not in "PSZ"
+
+
 def sentence_cues(text: str, start: float, end: float, marks: dict[str, float] | None = None,
-                  en: str | None = None) -> list[Cue]:
+                  en: str | None = None, words: dict | None = None) -> list[Cue]:
+    """words：align 给的词首真实时刻（见 timing.py）。显示文本的字数和念的稿子对得上时（英文版、不含公式的中文句），
+    每条字幕的起点取那个词的真实时刻，而不是按字数比例估。"""
     shown, positions = _pieces(text)
     if not shown:
         return []
+    spans_all = chunks(shown) if _CJK.search(shown) else en_chunks(shown)
+    points = [(float(pos), (marks or {}).get(name)) for pos, name in positions]
+    if words and sum(map(_content, shown)) == words.get("n"):
+        at = dict((int(i), t) for i, t in words["at"])
+        points += [(float(a), at.get(sum(map(_content, shown[:a])))) for a, _ in spans_all[1:]]
     anchors = [(0.0, start)]
-    for pos, name in positions:  # 书签：真实时刻（只取单调的，Whisper 偶尔会有倒挂）
-        t = (marks or {}).get(name)
-        if t is not None and anchors[-1][0] <= pos and anchors[-1][1] <= t <= end:
-            anchors.append((float(pos), t))
+    for pos, t in sorted((p, t) for p, t in points if t is not None):  # 只取单调的，Whisper 偶尔会有倒挂
+        if anchors[-1][0] <= pos and anchors[-1][1] <= t <= end:
+            anchors.append((pos, t))
     anchors.append((float(len(shown)), end))
     out, spans = [], []
-    for a, b in chunks(shown):
+    for a, b in spans_all:
         words = shown[a:b].strip()
         while words and words[-1] in DROP_TAIL:
             words = words[:-1]
@@ -345,7 +391,7 @@ def sentence_cues(text: str, start: float, end: float, marks: dict[str, float] |
         out.append(Cue(_clock(anchors, a), _clock(anchors, b), words))
         spans.append((a, b))
     if en and out:
-        _attach_en(out, shown, spans, en.strip())
+        _attach_en(out, shown, spans, " ".join(_BOOKMARK.sub("", en).split()))  # 英文版的书签写在 en 里
     for cue, nxt in zip(out, out[1:]):  # 太短的条往后借一点，不压到下一条
         cue.end = max(cue.end, min(cue.start + MIN_SECONDS, nxt.start))
     if out:
@@ -360,8 +406,11 @@ def build(doc: dict, beat_starts: list[float], beat_info: dict[str, dict]) -> li
         info = beat_info.get(beat["id"], {})
         for sentence, timing in zip(beat.get("say", []), info.get("cues", [])):
             marks = {k: offset + v for k, v in timing.get("marks", {}).items()}
+            words = timing.get("words")
+            if words:
+                words = {"n": words["n"], "at": [[i, offset + t] for i, t in words["at"]]}
             cues += sentence_cues(sentence["text"], offset + timing["start"], offset + timing["end"], marks,
-                                  sentence.get("en"))
+                                  sentence.get("en"), words)
     return cues
 
 

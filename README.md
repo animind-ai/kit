@@ -55,7 +55,10 @@ uv run animind-kit render ../scene-spec/examples/s67-p01.scene.yaml \
   --quality m            # l=480p15 m=720p30 h=1080p30
   # --backend manim      # 切回 Manim 对照
   # --subtitles soft     # 覆盖 style.subtitles：burned（默认）/ soft / none
+  # --lang en            # 英文版：每句的 en + i18n.en（scene-spec 设计稿 §7.7）；音频要用 animind-voice --lang en 合成
 ```
+
+英文版的字幕只有英文一行，在逗号、句号等标点后切成小句，再合并到每条不超过 44 个字符（不跨句号、问号合并）；中文版双语字幕的英文行里不显示书签。`animind-voice align` 还会在 timing.json 里写每个词首的真实时刻（`words`），显示文本和念的稿子字数对得上时（英文版、不含公式的中文句），每条字幕从那个词真正念出来的时刻开始，不再按字数比例估。
 
 墨线后端渲染整支 §6.7 第 01 支（4 分 40 秒）：480p 约 4 秒，720p 约 9 秒；Manim 后端 480p 约 26 秒，720p 约 24 秒。
 

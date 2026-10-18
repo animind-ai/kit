@@ -198,3 +198,33 @@ def test_equal_counts_pair_in_order():
     en = "Put the four lines together: putting in cash and taking away IOUs both raise the balance."
     _attach_en(cues, shown, [(0, cut), (cut, len(shown))], en)
     assert cues[0].en != cues[1].en and (cues[0].en + " " + cues[1].en).split() == en.split()
+
+
+def test_english_version_splits_on_clauses_without_orphans():
+    text = "A builder leans a ladder against a wall: its foot is a from the wall, and its top must reach a height of b."
+    lines = [text[a:b].strip() for a, b in sub.en_chunks(text)]
+    assert lines == ["A builder leans a ladder against a wall:", "its foot is a from the wall,",
+                     "and its top must reach a height of b."]
+    cues = sub.sentence_cues(text, 0.0, 6.0)
+    assert [c.text for c in cues][-1] == "and its top must reach a height of b." and all(not c.en for c in cues)
+
+
+def test_bilingual_line_drops_english_bookmarks():
+    cues = sub.sentence_cues("{@a}直角边 a 是二。", 0.0, 2.0, en="In this triangle, {@a}side a is two.")
+    assert cues[0].en == "In this triangle, side a is two."
+
+
+def test_word_times_from_align_place_cue_starts():
+    text = "The ladder is c long. How is c related to a and b?"
+    # 两句之间停了一秒：按字数比例估会把第二条的起点放早；词首的真实时刻把它放准
+    n = sum(map(sub._content, text))
+    second = sum(map(sub._content, "The ladder is c long."))
+    cues = sub.sentence_cues(text, 0.0, 5.0, words={"n": n, "at": [[0, 0.0], [second, 2.5]]})
+    assert [round(c.start, 2) for c in cues] == [0.0, 2.5]
+    wrong_count = sub.sentence_cues(text, 0.0, 5.0, words={"n": n + 1, "at": [[second, 2.5]]})
+    assert round(wrong_count[1].start, 2) != 2.5  # 字数对不上（比如中文稿展开了公式）就不用
+
+
+def test_english_cues_do_not_merge_across_sentences():
+    text = "Take two of those parts. Where do we stop?"
+    assert [text[a:b].strip() for a, b in sub.en_chunks(text)] == ["Take two of those parts.", "Where do we stop?"]

@@ -155,19 +155,30 @@ def beat_info_estimated(doc: dict, audio_dir: Path | None) -> dict:
     out = {}
     for beat in doc["beats"]:
         bt = timing.load(beat, audio_dir)
-        out[beat["id"]] = {"cues": [{"start": s.start, "end": s.end, "marks": s.marks} for s in bt.sentences], "steps": []}
+        out[beat["id"]] = {"cues": [{"start": s.start, "end": s.end, "marks": s.marks, "words": s.words} for s in bt.sentences],
+                           "steps": []}
     return out
 
 
+def load_spec(spec: Path, lang: str = "zh") -> dict:
+    """读场景文件；lang 不是中文时换成那种语言的版本（scene_spec.localize）。"""
+    from scene_spec import LocalizeError, localize
+
+    try:
+        return localize(load_file(spec), lang)
+    except LocalizeError as exc:
+        raise SystemExit(f"{spec.name} 没有完整的 {lang} 版：{exc}") from exc
+
+
 def inspect(spec: Path, audio_dir: Path | None, out_dir: Path | None, beats: list[str] | None = None,
-            quality: str = "m", log=print) -> list:
+            quality: str = "m", log=print, lang: str = "zh") -> list:
     """不编码视频的快速版式检查（墨线后端）：打印问题列表；给了 out_dir 就写分镜图。
 
     采样点和 render 相同（每批动作结束后的第一帧、beat 末帧），quality 只决定帧率（采样落在哪一帧）。
     """
     from .backends.moxian_backend import MoxianCompiler
 
-    doc = load_file(spec)
+    doc = load_spec(spec, lang)
     report = check(doc)
     for issue in report.issues:
         log(str(issue))
@@ -185,9 +196,12 @@ def inspect(spec: Path, audio_dir: Path | None, out_dir: Path | None, beats: lis
 
 def render(spec: Path, out: Path, audio_dir: Path | None, quality: str = "l", only: list[str] | None = None, log=print,
            backend: str = "manim", burn_subtitles: bool = False, theme_name: str | None = None,
-           subtitles: str | None = None) -> dict:
-    """subtitles：覆盖 style.subtitles（burned / soft / none）；版式（字号下限）也按覆盖后的模式算。"""
-    doc = load_file(spec)
+           subtitles: str | None = None, lang: str = "zh") -> dict:
+    """subtitles：覆盖 style.subtitles（burned / soft / none）；版式（字号下限）也按覆盖后的模式算。
+
+    lang：渲染哪种语言的版本（旁白音频要用同一个 lang 合成）；英文版字幕只有英文一行。
+    """
+    doc = load_spec(spec, lang)
     report = check(doc)
     for issue in report.issues:
         log(str(issue))
