@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 
 from moxian.core import PX, Group, Node
 from moxian.text import Tex, Text, math
-from moxian.text.font import FULLWIDTH_PUNCT, is_han, spacing_adjustments
+from moxian.text.font import DEFAULT_FONT, FULLWIDTH_PUNCT, is_han, spacing_adjustments, typeface
 from scene_spec.textmarks import ROLES, Span, parse_object_text
 
 from ..theme import Theme
@@ -20,8 +20,30 @@ from ..theme import Theme
 SCALE = 1.4
 
 
-def mtext(text: str, size: float, color: str, weight: str = "normal") -> Text:
-    return Text(text, size * SCALE, color, weight=weight)
+# 字体族：text 是正文（默认墨线的中文字体，中西文都能排），code 是等宽代码字体。
+# 场景文件的 style.fonts 可以换掉（编程课用 Inter + Source Code Pro）；后端开始渲染前调 set_fonts。
+FONTS = {"text": DEFAULT_FONT, "code": DEFAULT_FONT}
+# 字号换算的额外倍数（乘在 SCALE 上）。SCALE 是按默认中文字体对 Manim 标的；讲座版式照编程课的 cs_style（Inter、
+# Source Code Pro）在同一个字号下看起来大一圈，按 L06 的末帧量出来正文约 1.32 倍、代码约 1.45 倍。
+FONT_SCALE = {"text": 1.0, "code": 1.0}
+
+
+def set_fonts(fonts: dict | None, log=print, scale: dict | None = None) -> None:
+    """按 style.fonts 设字体；系统里没有的字体退回默认字体并提示。不写时恢复默认。scale：见 FONT_SCALE。"""
+    FONTS.update(text=DEFAULT_FONT, code=DEFAULT_FONT)
+    FONT_SCALE.update({"text": 1.0, "code": 1.0, **(scale or {})})
+    for key, family in (fonts or {}).items():
+        try:
+            typeface(family)
+        except RuntimeError:
+            log(f"FONT 系统里没有字体 {family!r}，{key} 用 {DEFAULT_FONT}")
+            continue
+        FONTS[key] = family
+
+
+def mtext(text: str, size: float, color: str, weight: str = "normal", mono: bool = False) -> Text:
+    key = "code" if mono else "text"
+    return Text(text, size * SCALE * FONT_SCALE[key], color, family=FONTS[key], weight=weight)
 
 
 def mmath(tex: str, size: float, color: str) -> Node:
@@ -83,18 +105,18 @@ def segments(text: str) -> list[tuple[str, Span | None]]:
     return parts
 
 
-def runs(body: str, size: float, color: str, weight: str = "normal") -> list[Node | Space]:
+def runs(body: str, size: float, color: str, weight: str = "normal", mono: bool = False) -> list[Node | Space]:
     """一段文本里的中文和公式交替：返回节点列表（片段间的空白和间距命令是 Space）。"""
     out: list[Node | Space] = []
     pos = 0
     for m in _MATH.finditer(body):
         if m.start() > pos:
-            out += _plain(body[pos : m.start()], size, color, weight)
+            out += _plain(body[pos : m.start()], size, color, weight, mono)
         if m.group(1).strip():
             out.append(mmath(m.group(1), size, color))
         pos = m.end()
     if pos < len(body):
-        out += _plain(body[pos:], size, color, weight)
+        out += _plain(body[pos:], size, color, weight, mono)
     return out
 
 
@@ -107,7 +129,7 @@ def _space(tokens: list[str], size: float) -> Space:
     return Space(em * size * SCALE * PX, soft)  # 和 Tex 一样：10pt 字对应 size 像素
 
 
-def _plain(text: str, size: float, color: str, weight: str = "normal") -> list[Node | Space]:
+def _plain(text: str, size: float, color: str, weight: str = "normal", mono: bool = False) -> list[Node | Space]:
     """普通文本 → 节点。首尾的空白、间距命令变成 Space；段内的间距命令把文字切开。"""
     text = _UNESCAPE.sub(r"\1", text)
     pieces: list[str | list[str]] = []  # 文字，或者一串相邻的间距记号
@@ -139,7 +161,7 @@ def _plain(text: str, size: float, color: str, weight: str = "normal") -> list[N
         core = "".join(p if isinstance(p, str) else "".join(p) for p in merged)
         out: list[Node | Space] = [mtex(core, size, color)]
         return ([_space(head, size)] if head else []) + out + ([_space(tail, size)] if tail else [])
-    return [_space(p, size) if isinstance(p, list) else mtext(p, size, color, weight) for p in merged]
+    return [_space(p, size) if isinstance(p, list) else mtext(p, size, color, weight, mono) for p in merged]
 
 
 def _cjk_edge(node: Node | Space | None, side: int) -> bool:
@@ -162,7 +184,7 @@ def _resolve_soft(parts: list[Node | Space]) -> list[Node | Space]:
             left = next((q for q in reversed(parts[:i]) if not isinstance(q, Space)), None)
             right = next((q for q in parts[i + 1 :] if not isinstance(q, Space)), None)
             if isinstance(left, Text) and isinstance(right, Text):
-                p = Space(Text(" ", left.em / PX).advance)
+                p = Space(Text(" ", left.em / PX, family=left.family).advance)
             elif _cjk_edge(left, -1) or _cjk_edge(right, 0):
                 continue
         out.append(p)
@@ -241,7 +263,7 @@ def rich(text: str, theme: Theme, size: float = 30, color: str | None = None) ->
         role = next((c for c in span.classes if c in ROLES), None) if span else None
         piece_color = theme.ink(role) if role else base_color
         weight = "bold" if span and "bold" in span.classes else "normal"
-        pieces = runs(body, size, piece_color, weight)
+        pieces = runs(body, size, piece_color, weight, mono=bool(span and "code" in span.classes))
         piece_nodes = [p for p in pieces if not isinstance(p, Space)]
         if span and span.id:
             spans[span.id] = Group(*piece_nodes) if len(piece_nodes) != 1 else piece_nodes[0]

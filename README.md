@@ -36,6 +36,11 @@
   `coin_flips`：抛硬币的频率折线（横轴对数刻度），`flip`（画到第 k 次，右上角写"正面 h/k"）、`runs`（再画几条别的 seed）、`band`（p ± 1/√k 的漏斗）；
   `galton`：高尔顿板，`drop`（一批球依次落下、在格子里堆起来）、`path`（描出某个球的左右路线）、`pascal`（格子底下写路径数）、`expect`（二项分布的期望台阶）、`flat`（"每格一样"的水平线）、`erase`；
   `outcomes`：样本空间方格，`shade` / `unshade`、`strike` / `restore`（划掉被条件排除的格子）、`frame` / `unframe`（描出剩下的样本空间）。抛硬币频率、高尔顿板、条件概率（洞察 #36–#38）用。
+- **编程课组件** `mx/cs.py`（设计见 `scene-spec/docs/cs-lecture.md`）：`heading`（页眉，`retitle` 换标题）、`code`（pygments 高亮的代码面板，
+  `highlight` / `unhighlight` 整行底色、`point` 下一行箭头、`jump` 跳回的弯箭头，`spans` 指向一行里的一段）、`terminal`（深色输出面板，保留缩进，逐行 `show`）、
+  `call_stack`（`push` / `pop` / `note` / `unnote`）、`bindings`（名字 → 对象，`rebind` / `update`）、`card` / `cards` / `pill` / `bullets`、`flow`（格子上的流程图）、
+  `image`（位图，墨线的 `ImageNode`）、`queue`（排队的人，`ask` / `number`）。场景写 `style.layout: lecture`（顶上窄带放页眉、side 是右半边、
+  字号照 cs_style）、`style.fonts`、`theme: classroom`。示例 `scene-spec/examples/aie1001-l06-p1.scene.yaml`（AIE1001 第 6 讲第 1 部分）。
 - **墨线后端** `backends/moxian_backend.py` + `mx/`：对象树跨 beat 常驻，每个 beat 一条时间线；文字、组件、布局都在 `mx/` 里用墨线实现。动作按旁白句子和书签的时刻播放，画面跟不上旁白时打印 `CUE LATE`。
 - **Manim 后端** `backends/manim_backend.py` + `widgets/`：保留用于对照，每个 beat 一个 Scene。
 - **渲染** `render.py`：逐 beat 渲染，和旁白合成，拼成一支成片。

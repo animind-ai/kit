@@ -188,7 +188,7 @@ def inspect(spec: Path, audio_dir: Path | None, out_dir: Path | None, beats: lis
     if unknown:
         raise SystemExit(f"没有这些 beat：{', '.join(sorted(unknown))}")
     theme = load_theme(doc.get("style", {}).get("theme", "paper"))
-    compiler = MoxianCompiler(doc, theme, audio_dir, log, quality)
+    compiler = MoxianCompiler(doc, theme, audio_dir, log, quality, base_dir=spec.parent)
     compiler.inspect(set(beats) if beats else None, out_dir)
     log(f"inspect {spec.name}：版式问题 {len(compiler.problems)} 条" + (f"，分镜图在 {out_dir}" if out_dir else ""))
     return compiler.problems
@@ -216,7 +216,7 @@ def render(spec: Path, out: Path, audio_dir: Path | None, quality: str = "l", on
     if backend == "moxian":
         from .backends.moxian_backend import MoxianCompiler
 
-        summary = MoxianCompiler(doc, theme, audio_dir, log, quality).render_all(out, build)
+        summary = MoxianCompiler(doc, theme, audio_dir, log, quality, base_dir=spec.parent).render_all(out, build)
         build.mkdir(parents=True, exist_ok=True)
         info = summary.pop("beat_info")
         subs = export_subtitles(doc, out, summary["clip_seconds"], info, theme, burn_subtitles, log)

@@ -35,17 +35,28 @@ class Region:
         return self.y1 - self.y0
 
 
-def regions(top_used: bool = True, side_used: bool = True, footer_used: bool = True) -> dict[str, Region]:
+# 分区模板（style.layout）：default 是题卡在上的例题版式；lecture 是讲座（编程课）的幻灯片版式，
+# 顶上只留一条放页眉的窄带，side 是右半边（左边代码、右边调用栈或终端），见 scene-spec 的 docs/cs-lecture.md。
+TEMPLATES = {
+    "default": {"top": 2.6, "side": SIDE_WIDTH},
+    "lecture": {"top": 1.4, "side": (FRAME_WIDTH - 2 * MARGIN - 0.4) / 2},
+}
+
+
+def regions(top_used: bool = True, side_used: bool = True, footer_used: bool = True,
+            template: str = "default") -> dict[str, Region]:
     """四个区域。没人用 top / side / footer 时，stage 把那块空间也占上。"""
     w, h = FRAME_WIDTH, FRAME_HEIGHT
     left, right, top, bottom = -w / 2 + MARGIN, w / 2 - MARGIN, h / 2 - MARGIN, -h / 2 + MARGIN
-    stage_top = top - 2.8 if top_used else top
+    band, side = TEMPLATES[template]["top"], TEMPLATES[template]["side"]
+    gap = 0.2 if template == "default" else 0.4
+    stage_top = top - band - 0.2 if top_used else top
     stage_bottom = bottom + 1.1 if footer_used else bottom
-    stage_right = right - SIDE_WIDTH - 0.2 if side_used else right
+    stage_right = right - side - gap if side_used else right
     return {
-        "top": Region("top", left, right, top - 2.6, top),
+        "top": Region("top", left, right, top - band, top),
         "stage": Region("stage", left, stage_right, stage_bottom, stage_top),
-        "side": Region("side", right - SIDE_WIDTH, right, stage_bottom, stage_top),
+        "side": Region("side", right - side, right, stage_bottom, stage_top),
         "footer": Region("footer", left, right, bottom, bottom + 1.0),
     }
 

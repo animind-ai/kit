@@ -45,7 +45,7 @@ from scene_spec import selectors
 from .. import analysis, lint, segments, subtitles, timing
 from ..mx import layout, scan, widgets
 from ..mx.readout import Readout
-from ..mx.text import SCALE, mmath, rich
+from ..mx.text import SCALE, mmath, rich, set_fonts
 from ..regions import Region
 from ..theme import Theme
 
@@ -59,6 +59,10 @@ CAMERA_MARGIN = 0.5  # fit 时四周留白（画面单位）
 CAMERA_EXEMPT_REGIONS = ("top", "footer")  # 这些区域的对象不跟镜头走
 WIDGET_DUR = 0.5
 LEVELS = {"display": 1.5, "title": 1.25, "body": 1.0, "caption": 0.75}  # scene-spec 的 level → 字号倍数
+# 讲座版式（style.layout: lecture）的字号照编程课的 cs_style：正文 30、公式 40，标题页大字 80
+LECTURE_SIZES = {"text": 30, "math": 40}
+LECTURE_LEVELS = {"display": 50 / 30, "title": 40 / 30, "body": 1.0, "caption": 24 / 30}
+LECTURE_FONT_SCALE = {"text": 1.32, "code": 1.45}  # 见 mx/text.py 的 FONT_SCALE
 CUE_LATE = 0.4
 SIZES = {"l": (854, 480, 15), "m": (1280, 720, 30), "h": (1920, 1080, 30)}
 
@@ -181,10 +185,15 @@ def probe_seconds(path: Path) -> float:
 
 
 class MoxianCompiler:
-    def __init__(self, doc: dict, theme: Theme, audio_dir: Path | None, log=print, quality: str = "l"):
+    def __init__(self, doc: dict, theme: Theme, audio_dir: Path | None, log=print, quality: str = "l",
+                 base_dir: Path | None = None):
         self.doc, self.t, self.audio_dir, self.log = doc, theme, audio_dir, log
+        self.base_dir = base_dir or Path(".")  # 场景文件所在目录：组件里的相对路径（图片）按它解析
         self.width, self.height, self.fps = SIZES[quality]
         self.data = doc.get("data", {})
+        style = doc.get("style", {})
+        self.template = style.get("layout", "default")  # 分区模板：default | lecture（讲座版式）
+        set_fonts(style.get("fonts"), log, LECTURE_FONT_SCALE if self.template == "lecture" else None)  # 建对象之前定下来
         # 场景参数跨 beat 常驻：每个 beat 的时间线从它们当时的值出发补间
         self.params = {k: Param(v, k) for k, v in spec_params.initial(doc).items()}
         self.lifetimes = analysis.lifetimes(doc)
@@ -233,32 +242,38 @@ class MoxianCompiler:
     def build_object(self, obj_id: str, definition: dict, opts: dict | None = None) -> Built:
         built = self._build_object(obj_id, definition, opts)
         # 侧栏里的文字：字号不低于侧栏下限（组件自己标了类别的，例如练一练框，按组件的）
-        if analysis.region_static(self.doc, obj_id) == "side" and getattr(built.node, "font_floor", None) is None:
+        if self._side_floor(obj_id) and getattr(built.node, "font_floor", None) is None:
             built.node.font_floor = "side"
         return built
 
+    def _side_floor(self, obj_id: str) -> bool:
+        """侧栏字号下限只管窄侧栏（公式常驻）；讲座版式的 side 是半个画面宽的一栏，按正文算。"""
+        return self.template != "lecture" and analysis.region_static(self.doc, obj_id) == "side"
+
     def _build_object(self, obj_id: str, definition: dict, opts: dict | None = None) -> Built:
         t = self.t
-        side = analysis.region_static(self.doc, obj_id) == "side"
+        side = self._side_floor(obj_id)
         if "widget" in definition:
             cls = widgets.lookup(definition["widget"])
             if cls is None:
                 raise NotImplementedError(f"kit（墨线）还没有组件 {definition['widget']!r}（对象 {obj_id}）")
             opts = {**({"min_size": self.min_size("practice")} if definition["widget"] == "think_box" else {}),
-                    **(opts or {})}
+                    "base_dir": self.base_dir, "acts": analysis.acts_on(self.doc, obj_id), **(opts or {})}
             w = cls(obj_id, definition, t, self.data, self.params, opts=opts)
             return Built(w.node, definition, w, w.built.spans, w.built.parts, w.built.items)
         kind = definition["type"]
         role = definition.get("role")
-        level = LEVELS[definition.get("level", "body")]
+        lecture = self.template == "lecture"
+        level = (LECTURE_LEVELS if lecture else LEVELS)[definition.get("level", "body")]
+        text_size, math_size = (LECTURE_SIZES["text"], LECTURE_SIZES["math"]) if lecture else (36, 40)
         floor = self.min_size("side") if side else 0.0
         if kind == "text":
-            r = rich(definition["text"], t, size=max(36 * level, floor), color=t.ink(role))
+            r = rich(definition["text"], t, size=max(text_size * level, floor), color=t.ink(role))
             return Built(r.node, definition, spans=r.spans)
         if kind == "math":
-            return Built(mmath(r"\displaystyle " + definition["tex"], max(40 * level, floor), t.ink(role)), definition)
+            return Built(mmath(r"\displaystyle " + definition["tex"], max(math_size * level, floor), t.ink(role)), definition)
         if kind == "readout":
-            return Built(Readout(definition, t, self.params, max(36 * level, floor)).node, definition)
+            return Built(Readout(definition, t, self.params, max(text_size * level, floor)).node, definition)
         raise NotImplementedError(f"kit（墨线）0.1 还不支持 type: {kind}（对象 {obj_id}）")
 
     def _raise_labels(self, obj_id: str) -> bool:
@@ -372,7 +387,7 @@ class MoxianCompiler:
     def region(self, obj_id: str) -> Region:
         """对象所在区域。顶上有钉住的对象时，主讲区和侧栏的上沿取它的实际下沿，而不是固定比例。"""
         usage = analysis.usage_for(self.doc, self.lifetimes, obj_id)
-        r = layout.regions(*usage)[self.region_of(obj_id)]
+        r = layout.regions(*usage, template=self.template)[self.region_of(obj_id)]
         if usage[0] and r.name in ("stage", "side") and self.pinned_floor is not None:
             r = replace(r, y1=self.pinned_floor)
         return r

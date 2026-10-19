@@ -407,6 +407,7 @@ REGISTRY: dict[str, type[Widget]] = {
     "galton": __import__("animind_kit.mx.chance", fromlist=["Galton"]).Galton,  # （高尔顿板）
     "outcomes": __import__("animind_kit.mx.chance", fromlist=["Outcomes"]).Outcomes,  # （样本空间方格，条件概率）
 }
+REGISTRY.update(__import__("animind_kit.mx.cs", fromlist=["REGISTRY"]).REGISTRY)  # 编程课组件在 cs.py（代码面板、终端、调用栈……）
 
 
 def lookup(name: str) -> type[Widget] | None:

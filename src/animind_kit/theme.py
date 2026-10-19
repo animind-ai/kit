@@ -95,7 +95,7 @@ def theme(name: str = "paper") -> Theme:
         NO=p["C_NO"],
         DIM=p["C_DIM"],
         HL_INK=hl_ink,
-        CARD=blend(fg, bg, 0.06),
+        CARD=p.get("C_CARD", blend(fg, bg, 0.06)),
         MARK=blend(p.get("C_HL_MARK", p["C_HL"]), bg, 0.45 if light else 0.35),
         is_light=light,
     )
