@@ -445,6 +445,20 @@ def write(cues: list[Cue], out: Path) -> tuple[Path, Path]:
     return vtt, srt
 
 
+def _has_cjk(text: str) -> bool:
+    from moxian.text.font import FULLWIDTH_PUNCT, is_han
+
+    return any(is_han(ch) or ch in FULLWIDTH_PUNCT for ch in text)
+
+
+TRACK_LANGUAGE = {"zh": "chi", "en": "eng"}  # ISO 639-2，播放器按它显示字幕轨的语言
+
+
+def track_language(doc: dict) -> str:
+    """软字幕轨的语言标签：按场景的 style.lang（英文场景 eng，默认中文 chi）。"""
+    return TRACK_LANGUAGE.get((doc.get("style") or {}).get("lang") or "zh", "chi")
+
+
 def mux_soft(video: Path, srt: Path, language: str = "chi") -> Path:
     """把字幕作为 mov_text 轨道封装进 mp4（软字幕：默认显示，播放器里可关；画面本身不变）。"""
     tmp = video.with_suffix(".subs.mp4")
@@ -477,7 +491,11 @@ def burn(video: Path, cues: list[Cue], out: Path, background: str, ink: str, wor
     inner_h = h - band
     inner_w = int(round(w * inner_h / h / 2)) * 2
     work.mkdir(parents=True, exist_ok=True)
+    from .mx.text import latin_font
+
     face = typeface("Noto Sans CJK SC")
+    latin = latin_font()
+    latin_face = typeface(latin) if latin else face
     bilingual = any(c.en for c in cues)
     zh_size, en_size = (band * 0.40, band * 0.28) if bilingual else (band * 0.46, 0.0)
     r, g, b, _ = _rgb(ink)
@@ -487,10 +505,11 @@ def burn(video: Path, cues: list[Cue], out: Path, background: str, ink: str, wor
     en_paint = skia.Paint(Color=soft, AntiAlias=True)
 
     def draw(canvas, text: str, size: float, paint, baseline: float) -> None:
-        font = skia.Font(face, size)
+        tf = face if _has_cjk(text) else latin_face  # 纯西文行用西文字体（标点、字距是西文的）
+        font = skia.Font(tf, size)
         width = font.measureText(text)
         if width > w * TEXT_WIDTH:
-            font = skia.Font(face, size * w * TEXT_WIDTH / width)
+            font = skia.Font(tf, size * w * TEXT_WIDTH / width)
             width = font.measureText(text)
         canvas.drawString(text, (w - width) / 2, baseline, font, paint)
 

@@ -56,6 +56,7 @@ uv run animind-kit render ../scene-spec/examples/s67-p01.scene.yaml \
   # --backend manim      # 切回 Manim 对照
   # --subtitles soft     # 覆盖 style.subtitles：burned（默认）/ soft / none
   # --lang en            # 英文版：每句的 en + i18n.en（scene-spec 设计稿 §7.7）；音频要用 animind-voice --lang en 合成
+  #                      # 默认取文件本身的 style.lang：直接用英文写的场景（style.lang: en）不用 --lang，也不用写 en
 ```
 
 英文版的字幕只有英文一行，在逗号、句号等标点后切成小句，再合并到每条不超过 44 个字符（不跨句号、问号合并）；中文版双语字幕的英文行里不显示书签。`animind-voice align` 还会在 timing.json 里写每个词首的真实时刻（`words`），显示文本和念的稿子字数对得上时（英文版、不含公式的中文句），每条字幕从那个词真正念出来的时刻开始，不再按字数比例估。
@@ -95,7 +96,7 @@ uv run animind-kit inspect ../scene-spec/examples/ep22.scene.yaml --no-sheets   
 
 同一个问题跨好几个 beat 时合并成一条。分镜图每张 6 格、按时间排，问题用红框圈出、标上同样的编号（虚线框是另一方）。`render` 跑的是同一套检查、同样的采样帧，问题列在"版式问题"里。确实是故意的情况，在对象上写 `allow`（见 scene-spec 设计稿 §6.4）。有问题时退出码 1。
 
-`--audio` 目录里要有每个 beat 的 `<beat>.wav` 和 `<beat>.timing.json`（voice 流水线的输出格式；没有音频的 beat 按每个汉字 0.22 秒估算时长）。`--quality` 取 `l` / `m` / `h`。
+`--audio` 目录里要有每个 beat 的 `<beat>.wav` 和 `<beat>.timing.json`（voice 流水线的输出格式；没有音频的 beat 按 style.lang 估算时长：中文每字 0.22 秒、英文每秒约 11.7 个字符，乘 pace 的语速倍数、除以 voice.speed，句间停顿同 animind-voice 的 GAP）。英文场景里不含汉字的文字用西文字体（Source Sans 3 / Inter / Noto Sans / Helvetica Neue / DejaVu Sans / Arial，取第一款装了的），软字幕轨标 eng。`--quality` 取 `l` / `m` / `h`。
 
 ### 字号下限
 

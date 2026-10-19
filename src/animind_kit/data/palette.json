@@ -63,5 +63,18 @@
     "C_HL_MARK": "#FFE800",
     "C_NO": "#E4572E",
     "C_DIM": "#A7A3B5"
+  },
+  "classroom": {
+    "BG": "#F6F5F1",
+    "FG": "#1D232B",
+    "C_A": "#0F6E73",
+    "C_B": "#3E8E8A",
+    "C_C": "#C27A1A",
+    "C_HL": "#C27A1A",
+    "C_HL_INK": "#C27A1A",
+    "C_HL_MARK": "#F6CD80",
+    "C_NO": "#B03A2E",
+    "C_DIM": "#7D847F",
+    "C_CARD": "#E7EBE8"
   }
 }

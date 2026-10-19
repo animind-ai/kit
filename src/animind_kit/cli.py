@@ -37,8 +37,9 @@ def main(argv: list[str] | None = None) -> int:
     i.add_argument("--audio", type=Path, help="旁白目录：用真实时长（没有就按字数估算）")
     i.add_argument("--quality", choices=["l", "m", "h"], default="m", help="和 render 用同一档，采样才落在同一帧")
     for cmd in (r, i):
-        cmd.add_argument("--lang", choices=["zh", "en"], default="zh",
-                         help="渲染哪种语言的版本（场景文件里每句的 en + i18n.en），旁白目录要是同一语言合成的")
+        cmd.add_argument("--lang", choices=["zh", "en"],
+                         help="渲染哪种语言的版本，默认是文件本身的 style.lang（没写就是 zh）；"
+                              "要译本时用每句的 en + i18n.en。旁白目录要是同一语言合成的")
     g = sub.add_parser("regress", help="截图回归：渲染示例末帧，和 tests/baseline 比对")
     g.add_argument("--update", action="store_true", help="用当前结果覆盖基准图")
     args = parser.parse_args(argv)

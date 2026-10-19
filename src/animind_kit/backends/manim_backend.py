@@ -105,7 +105,7 @@ class Compiler:
 
     def scene_class(self, beat: dict) -> type[Scene]:
         compiler = self
-        beat_timing = timing.load(beat, self.audio_dir)
+        beat_timing = timing.load(beat, self.audio_dir, self.doc.get("style"))
 
         class BeatScene(Scene):
             def construct(self) -> None:

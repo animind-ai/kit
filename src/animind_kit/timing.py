@@ -59,7 +59,29 @@ def _mark_fractions(text: str) -> dict[str, float]:
     return fractions
 
 
-def load(beat: dict, audio_dir: Path | None) -> BeatTiming:
+# 没有音频时的估算（和 animind-voice 一致：句前 0.3 秒，句间停顿按 pace 取 voice 的 GAP，都除以 voice.speed）
+SECONDS_PER_CHAR = {"zh": 0.22, "en": 1 / 11.7}  # 中文每字约 0.22 秒；英文约每秒 11.7 个字符（≈150 词/分）
+PACE_RATE = {"normal": 1.0, "brisk": 1.12, "slow": 0.85, "ask": 0.92}  # 语速倍数
+GAP = {"normal": 0.35, "brisk": 0.25, "slow": 0.6, "ask": 0.55}  # 同 animind-voice synth.GAP
+LEAD = 0.3
+
+
+def estimate(say: list[dict], style: dict | None = None) -> tuple[list[dict], float]:
+    """No audio: sentence cues from the text length, per language (style.lang), pace and style.voice.speed."""
+    style = style or {}
+    per_char = SECONDS_PER_CHAR.get(style.get("lang") or "zh", SECONDS_PER_CHAR["zh"])
+    speed = float((style.get("voice") or {}).get("speed", 1.0)) or 1.0
+    cues, cursor = [], LEAD / speed
+    for k, s in enumerate(say):
+        pace = s.get("pace", "normal")
+        seconds = max(1.0, len(_BOOKMARK.sub("", s["text"])) * per_char / PACE_RATE.get(pace, 1.0) / speed)
+        cues.append({"start": cursor, "end": cursor + seconds})
+        cursor += seconds + (GAP.get(pace, GAP["normal"]) / speed if k + 1 < len(say) else 0.35)
+    return cues, cursor
+
+
+def load(beat: dict, audio_dir: Path | None, style: dict | None = None) -> BeatTiming:
+    """style：场景的 style（lang、voice.speed），只用于没有音频时的估算。"""
     say = beat.get("say", [])
     cues, total, source = None, None, "estimated"
     aligned: dict[str, dict[str, float]] = {}
@@ -73,13 +95,8 @@ def load(beat: dict, audio_dir: Path | None) -> BeatTiming:
             words = data.get("words", {})
             if len(cues) != len(say):
                 raise ValueError(f"{path.name} 有 {len(cues)} 句，scene 里 {beat['id']} 有 {len(say)} 句")
-    if cues is None:  # 没有音频：按每个汉字 0.22 秒估
-        cues, cursor = [], 0.3
-        for s in say:
-            seconds = max(1.0, len(_BOOKMARK.sub("", s["text"])) * 0.22)
-            cues.append({"start": cursor, "end": cursor + seconds})
-            cursor += seconds + 0.35
-        total = cursor
+    if cues is None:  # 没有音频：按语言、pace、语速估
+        cues, total = estimate(say, style)
     sentences = []
     for i, (s, cue) in enumerate(zip(say, cues)):
         span = cue["end"] - cue["start"]

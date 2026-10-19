@@ -45,7 +45,7 @@ from scene_spec import selectors
 from .. import analysis, lint, segments, subtitles, timing
 from ..mx import layout, scan, widgets
 from ..mx.readout import Readout
-from ..mx.text import SCALE, mmath, rich
+from ..mx.text import SCALE, mmath, rich, use_language
 from ..regions import Region
 from ..theme import Theme
 
@@ -183,6 +183,7 @@ def probe_seconds(path: Path) -> float:
 class MoxianCompiler:
     def __init__(self, doc: dict, theme: Theme, audio_dir: Path | None, log=print, quality: str = "l"):
         self.doc, self.t, self.audio_dir, self.log = doc, theme, audio_dir, log
+        use_language(doc.get("style", {}).get("lang"))  # 英文场景的文字用西文字体
         self.width, self.height, self.fps = SIZES[quality]
         self.data = doc.get("data", {})
         # 场景参数跨 beat 常驻：每个 beat 的时间线从它们当时的值出发补间
@@ -477,7 +478,7 @@ class MoxianCompiler:
 
         clip 给了（真渲染）就在定格处给旁白插静音、写在 clip 旁边；不给（inspect）只估算时长。
         """
-        bt = timing.load(beat, self.audio_dir)
+        bt = timing.load(beat, self.audio_dir, self.doc.get("style"))
         tl_items: list[tuple[float, Animation]] = []
         snapshots: list[tuple[float, dict[str, Node]]] = [(-1.0, dict(self.visible))]  # 每批动作之后谁在画面上
         ends: list[tuple[float, str]] = []  # (逻辑时刻, 来源)
