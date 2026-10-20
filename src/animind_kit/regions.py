@@ -41,11 +41,14 @@ TEMPLATES = {
     "default": {"top": 2.6, "side": SIDE_WIDTH},
     "lecture": {"top": 1.4, "side": (FRAME_WIDTH - 2 * MARGIN - 0.4) / 2},
     # v2（培玉视觉规范 v2，2026-10-20）：没有右侧栏，side 的内容并进顶上一条窄带（与 top 同一块），
-    # stage 占满整个宽度；底部留一条一行字幕带（画面不再整体缩小，见 subtitles.ONE_LINE_BAND）。
+    # stage 占满整个宽度。字幕仍是 kit 默认的中英双语两行烧录（2026-10-20 用户定）：成片里画面整体缩到
+    # 1 - subtitles.BAND，字幕带在画面下方、不占版式里的位置，所以 v2 的底边和 default 一样只留安全边距。
     "v2": {"top": 1.0, "side": 0.0},
 }
-# 每个模板在画面底部给烧录字幕留的高度（单位）。v2：一行字幕带 54px@720 = 0.6 单位，再空 0.1。
-SUBTITLE_STRIP = {"v2": 0.6}
+# 右下角 logo 位（brand/peiyu/wrap.py 叠的角标，720p 下 x 1204–1258、y 644–698 ≈ 0.6×0.6 单位，离边 0.24）。
+# 烧录字幕时画面缩小、角标落在画面外的字幕带右端；soft / none 时角标压在画面上。v2 一律不许对象伸进这个角：
+# 对象包围盒 x1 > x、y0 < y 即报（坐标是渲染画面单位）。
+LOGO_CORNER = {"v2": (6.2, -3.1)}
 
 
 def regions(top_used: bool = True, side_used: bool = True, footer_used: bool = True,
@@ -54,7 +57,6 @@ def regions(top_used: bool = True, side_used: bool = True, footer_used: bool = T
     w, h = FRAME_WIDTH, FRAME_HEIGHT
     left, right, top, bottom = -w / 2 + MARGIN, w / 2 - MARGIN, h / 2 - MARGIN, -h / 2 + MARGIN
     if template == "v2":
-        bottom = -h / 2 + SUBTITLE_STRIP["v2"] + 0.1
         band = TEMPLATES["v2"]["top"]
         header = top_used or side_used  # side 就在顶栏里
         stage_top = top - band - 0.2 if header else top
@@ -85,11 +87,13 @@ def check_boxes(boxes: dict[str, tuple[float, float, float, float]], ignore_pair
 
     problems = []
     w, h = FRAME_WIDTH / 2 - MARGIN + 0.05, FRAME_HEIGHT / 2 - MARGIN + 0.05
-    low = FRAME_HEIGHT / 2 - SUBTITLE_STRIP[template] - 0.05 if template in SUBTITLE_STRIP else h  # 不许压进字幕带
+    corner = LOGO_CORNER.get(template)
     for name, (x0, x1, y0, y1) in boxes.items():
         top = FRAME_HEIGHT / 2 - 0.1 if name in pinned else h
-        if x0 < -w or x1 > w or y0 < -low or y1 > top:
+        if x0 < -w or x1 > w or y0 < -h or y1 > top:
             problems.append(f"{name} 超出安全边距（x {x0:.2f}..{x1:.2f}，y {y0:.2f}..{y1:.2f}）")
+        elif corner and x1 > corner[0] and y0 < corner[1]:
+            problems.append(f"{name} 压到右下角 logo 位（x {x0:.2f}..{x1:.2f}，y {y0:.2f}..{y1:.2f}）")
     for a, b in combinations(boxes, 2):
         if frozenset((a, b)) in ignore_pairs:
             continue

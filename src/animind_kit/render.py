@@ -127,13 +127,12 @@ def export_subtitles(doc: dict, out: Path, clip_seconds: list[float], beat_info:
     bilingual = any(c.en for c in cues)
     info = {"mode": mode, "vtt": vtt.name, "srt": srt.name, "cues": len(cues), "bilingual": bilingual}
     work = out.parent / f".build-{out.stem}-subtitles"
-    burner = subtitles.burn_one_line if subtitles.one_line(doc) else subtitles.burn  # v2 版式：一行字幕、画面不缩
     if mode == "burned":
         clean = out.with_name(f"{out.stem}.clean.mp4")
         shutil.copyfile(out, clean)
         subtitles.mux_soft(clean, srt)
         burning = out.with_name(f"{out.stem}.burning.mp4")
-        burner(out, cues, burning, theme.BG, theme.FG, work)
+        subtitles.burn(out, cues, burning, theme.BG, theme.FG, work)
         burning.replace(out)
         info.update(burned=out.name, clean=clean.name, embedded_in=clean.name)
         log(f"字幕 {len(cues)} 条{'（中英双语）' if bilingual else ''} → 已烧进 {out.name}；"
@@ -143,7 +142,7 @@ def export_subtitles(doc: dict, out: Path, clip_seconds: list[float], beat_info:
     info["embedded"] = "mov_text"
     if burn:
         burned = out.with_name(f"{out.stem}.burned.mp4")
-        burner(out, cues, burned, theme.BG, theme.FG, work)
+        subtitles.burn(out, cues, burned, theme.BG, theme.FG, work)
         info["burned"] = burned.name
     log(f"字幕 {len(cues)} 条 → {vtt.name}、{srt.name}（已封装为软字幕轨）" + ("，烧录副本 " + info["burned"] if burn else ""))
     return info
