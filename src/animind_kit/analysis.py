@@ -1,7 +1,8 @@
 """对 scene-spec 文档的静态分析，不依赖任何渲染后端。
 
 - 每个对象在哪些 beat 可见（按 show / hide / transform-to 推算）；
-- 对象活着的时候，top / side / footer 有没有被别人占用（决定主讲区能占多大）。
+- 对象活着的时候，top / side / footer 有没有被别人占用（决定主讲区能占多大）；
+  style.layout: stable 时改成整个场景只算一次。
 """
 
 from __future__ import annotations
@@ -52,8 +53,24 @@ def lifetimes(doc: dict) -> dict[str, set[int]]:
     return life
 
 
+def scene_usage(doc: dict, life: dict[str, set[int]]) -> tuple[bool, bool, bool]:
+    """整个场景里 top / side / footer 有没有被用到过（任何对象、任何 beat）。"""
+    used = {"top": False, "side": False, "footer": False}
+    for obj_id, beats in life.items():
+        region = region_static(doc, obj_id)
+        if beats and region in used:
+            used[region] = True
+    return used["top"], used["side"], used["footer"]
+
+
 def usage_for(doc: dict, life: dict[str, set[int]], obj_id: str) -> tuple[bool, bool, bool]:
-    """对象活着的这段时间里，top / side / footer 有没有被别的对象用到。"""
+    """对象活着的这段时间里，top / side / footer 有没有被别的对象用到。
+
+    style.layout: stable 时不看可见期，整场只算一次（scene_usage）：场景里用到过的区域一直预留，
+    所以主讲区在 beat 之间大小、位置都不变，换组件或顶上出现文字时不会跳、不会缩。
+    """
+    if (doc.get("style") or {}).get("layout") == "stable":
+        return scene_usage(doc, life)
     mine = life.get(obj_id) or set()
     used = {"top": False, "side": False, "footer": False}
     for other, beats in life.items():
