@@ -57,7 +57,7 @@ DEFAULT_DUR = {
 CAMERA_ZOOM = 2.0  # camera 只给 target 时的默认放大倍数
 CAMERA_MARGIN = 0.5  # fit 时四周留白（画面单位）
 CAMERA_EXEMPT_REGIONS = ("top", "footer")  # 这些区域的对象不跟镜头走
-V2_MIN_FONT = 40.5  # v2 版式的全局字号下限（成片 1080p 像素，= font_size 22）；烧录字幕时按画面缩放抬高
+V2_MIN_FONT = 40.5  # v2 版式的全局字号下限：font_size 22 = 40.5px，按渲染画面（1080p）量，烧录字幕缩到 0.88 之前
 WIDGET_DUR = 0.5
 LEVELS = {"display": 1.5, "title": 1.25, "body": 1.0, "caption": 0.75}  # scene-spec 的 level → 字号倍数
 # 讲座版式（style.layout: lecture）的字号照编程课的 cs_style：正文 30、公式 40，标题页大字 80
@@ -221,9 +221,9 @@ class MoxianCompiler:
         self.followers: dict[int, tuple[Node, Node, Node, np.ndarray]] = {}
         self.ignore_pairs: set[frozenset[str]] = set()
         self.problems: list[str] = []
-        # v2：成片里任何画面文字不小于 font_size 22（≈ 27px@720 = 40.5px@1080）；双语字幕烧录时画面缩到 0.88，
-        # 所以渲染画面里的下限是 40.5 / 0.88 ≈ 46px@1080（和 lint.floors 同一口径）
-        default_min = V2_MIN_FONT / scale if self.template == "v2" else lint.Config.min_font
+        # v2：任何画面文字 font_size ≥ 22，即渲染画面里 ≥ 40.5px@1080（2026-10-20 用户定：按渲染尺寸量，
+        # 不再除以烧录字幕的 0.88；成片里约 35.6px@1080 / 23.8px@720）
+        default_min = V2_MIN_FONT if self.template == "v2" else lint.Config.min_font
         self.lint_config = lint.Config(min_font=float(doc.get("style", {}).get("min_font", default_min)),
                                        floors=self.floors)
         self.allow = lint.Allow.from_doc(doc)

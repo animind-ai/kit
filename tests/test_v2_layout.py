@@ -39,3 +39,8 @@ def test_v2_logo_corner_checked():
     assert not R.check_boxes(box, set(), template="v2", logo=False)
     # 字幕带不在版式里：压到原来一行字幕条的位置不再算出界
     assert not R.check_boxes({"z": (-3.0, 3.0, -3.65, -3.0)}, set(), template="v2")
+
+
+def test_v2_min_font_is_render_size():
+    from animind_kit.backends import moxian_backend as mb
+    assert mb.V2_MIN_FONT == 40.5
