@@ -161,12 +161,25 @@ def beat_info_estimated(doc: dict, audio_dir: Path | None) -> dict:
     return out
 
 
+def source_lang(doc: dict) -> str:
+    """文件本身的语言：style.lang，默认 zh。
+
+    scene-spec 0.1 之后的版本自带 source_lang（animind-ai/scene-spec#2）；旧版没有时用同样的规则，
+    这样 kit 不依赖两边的合并顺序。旧版 scene-spec 的 localize 仍然要求每句都有 en。
+    """
+    try:
+        from scene_spec import source_lang as spec_source_lang
+    except ImportError:
+        return (doc.get("style") or {}).get("lang") or "zh"
+    return spec_source_lang(doc)
+
+
 def load_spec(spec: Path, lang: str | None = None) -> dict:
     """读场景文件，换成 lang 那种语言的版本（scene_spec.localize）。
 
     lang 不给就用文件本身的语言（style.lang，默认 zh）：直接用英文写的场景（style.lang: en）不需要 en 译句。
     """
-    from scene_spec import LocalizeError, localize, source_lang
+    from scene_spec import LocalizeError, localize
 
     doc = load_file(spec)
     lang = lang or source_lang(doc)

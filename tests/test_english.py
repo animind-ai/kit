@@ -4,6 +4,8 @@ import copy
 import json
 from pathlib import Path
 
+import pytest
+import scene_spec
 from scene_spec.loader import load_file
 
 from animind_kit import subtitles, theme, timing
@@ -22,6 +24,8 @@ def english_first() -> dict:
     return doc
 
 
+@pytest.mark.skipif(not hasattr(scene_spec, "source_lang"),
+                    reason="English-first localize needs scene-spec with source_lang (animind-ai/scene-spec#2)")
 def test_render_defaults_to_the_files_own_language(tmp_path):
     path = tmp_path / "en.scene.yaml"
     path.write_text(json.dumps(english_first(), ensure_ascii=False), encoding="utf-8")
