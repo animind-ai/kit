@@ -123,7 +123,12 @@ def _end_frame(path, out):
 
     import skia
 
-    subprocess.run(["ffmpeg", "-y", "-v", "error", "-sseof", "-0.1", "-i", str(path), "-frames:v", "1", str(out)], check=True)
+    # 按帧定位：取最后一帧（不是结尾前的某个时刻，那样可能漏掉结束瞬间的问题）
+    count = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-count_frames",
+                            "-show_entries", "stream=nb_read_frames", "-of", "csv=p=0", str(path)],
+                           capture_output=True, text=True, check=True).stdout.strip()
+    subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(path), "-vf", f"select=eq(n\\,{int(count) - 1})",
+                    "-vsync", "0", "-frames:v", "1", str(out)], check=True)
     image = skia.Image.open(str(out))
     return image.convert(colorType=skia.kRGBA_8888_ColorType, alphaType=skia.kUnpremul_AlphaType).toarray()[:, :, :3]
 

@@ -10,6 +10,7 @@ from pathlib import Path
 from scene_spec import check
 from scene_spec.loader import load_file
 
+from . import timing
 from .theme import theme as load_theme
 
 QUALITY = {"l": "low_quality", "m": "medium_quality", "h": "high_quality"}
@@ -170,11 +171,23 @@ def load_spec(spec: Path, lang: str = "zh") -> dict:
         raise SystemExit(f"{spec.name} 没有完整的 {lang} 版：{exc}") from exc
 
 
+def timing_gate(doc: dict, beats: dict, path: Path | None, log) -> list[str]:
+    """时间报告写成 timing-report.json（path 给了才写），再过 scene-spec 的门禁：SS480 画面晚于书签、SS481 格式、SS487 句间静音。
+    错误原样打印、返回。regress 不走这里：它只比截图，不因为时间失败。"""
+    if path is not None:
+        timing.write_report(path, beats)
+    issues = timing.timing_issues(doc, {"beats": beats})
+    for issue in issues:
+        log(issue)
+    return issues
+
+
 def inspect(spec: Path, audio_dir: Path | None, out_dir: Path | None, beats: list[str] | None = None,
-            quality: str = "m", log=print, lang: str = "zh") -> list:
+            quality: str = "m", log=print, lang: str = "zh", report_dir: Path | None = None) -> list:
     """不编码视频的快速版式检查（墨线后端）：打印问题列表；给了 out_dir 就写分镜图。
 
     采样点和 render 相同（每批动作结束后的第一帧、beat 末帧），quality 只决定帧率（采样落在哪一帧）。
+    report_dir 给了就在那里写 timing-report.json；返回的问题里包括时间门禁的错误（SS48x）。
     """
     from .backends.moxian_backend import MoxianCompiler
 
@@ -188,12 +201,13 @@ def inspect(spec: Path, audio_dir: Path | None, out_dir: Path | None, beats: lis
     if unknown:
         raise SystemExit(f"没有这些 beat：{', '.join(sorted(unknown))}")
     theme = load_theme(doc.get("style", {}).get("theme", "paper"))
-    compiler = MoxianCompiler(doc, theme, audio_dir, log, quality)
+    compiler = MoxianCompiler(doc, theme, audio_dir, log, quality, spec_dir=spec.parent)
     compiler.inspect(set(beats) if beats else None, out_dir)
-    log(f"inspect {spec.name}：版式问题 {len(compiler.problems)} 条"
+    time_issues = timing_gate(doc, compiler.timing_beats, report_dir / "timing-report.json" if report_dir else None, log)
+    log(f"inspect {spec.name}：版式问题 {len(compiler.problems)} 条，时间问题 {len(time_issues)} 条"
         + (f"，中途提醒 {len(compiler.warnings)} 条" if compiler.warnings else "")
         + (f"，分镜图在 {out_dir}" if out_dir else ""))
-    return compiler.problems
+    return compiler.problems + time_issues
 
 
 def render(spec: Path, out: Path, audio_dir: Path | None, quality: str = "l", only: list[str] | None = None, log=print,
@@ -218,14 +232,16 @@ def render(spec: Path, out: Path, audio_dir: Path | None, quality: str = "l", on
     if backend == "moxian":
         from .backends.moxian_backend import MoxianCompiler
 
-        summary = MoxianCompiler(doc, theme, audio_dir, log, quality).render_all(out, build)
+        summary = MoxianCompiler(doc, theme, audio_dir, log, quality, spec_dir=spec.parent).render_all(out, build)
         build.mkdir(parents=True, exist_ok=True)
         info = summary.pop("beat_info")
+        summary["timing_issues"] = timing_gate(doc, summary.pop("timing_beats"), out.parent / "timing-report.json", log)
         subs = export_subtitles(doc, out, summary["clip_seconds"], info, theme, burn_subtitles, log)
         summary["subtitles"] = subs
         summary["chapters"] = str(write_chapters(doc, summary["clip_seconds"], out, info, {"subtitles": subs}))
         (build / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
-        log(f"wrote {out} {summary['seconds']}s；版式问题 {len(summary['layout_problems'])} 条")
+        log(f"wrote {out} {summary['seconds']}s；版式问题 {len(summary['layout_problems'])} 条，"
+            f"时间问题 {len(summary['timing_issues'])} 条")
         return summary
 
     from manim import tempconfig
@@ -278,7 +294,8 @@ def render(spec: Path, out: Path, audio_dir: Path | None, quality: str = "l", on
     playlist.write_text("".join(f"file '{c.resolve()}'\n" for c in clips), encoding="utf-8")
     out.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", str(playlist), "-c", "copy", str(out)], check=True)
-    summary = {"out": str(out), "seconds": round(probe_seconds(out), 1), "beats": names, "layout_problems": compiler.problems}
+    summary = {"out": str(out), "seconds": round(probe_seconds(out), 1), "beats": names, "layout_problems": compiler.problems,
+               "timing_issues": timing_gate(doc, compiler.timing_beats, out.parent / "timing-report.json", log)}
     clip_seconds = [probe_seconds(c) for c in clips]
     info = beat_info_estimated(doc, audio_dir)
     summary["subtitles"] = export_subtitles(doc, out, clip_seconds, info, theme, burn_subtitles, log)

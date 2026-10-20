@@ -72,6 +72,10 @@ class Compiler:
         self.state = State()
         self.problems: list[str] = []
         self.lifetimes = analysis.lifetimes(doc)
+        self.timing_beats: dict[str, dict] = {}  # 时间报告（和墨线后端同一格式）
+        for obj_id, d in doc.get("objects", {}).items():
+            if d.get("type") == "clip":  # 片段只在墨线后端做：这里早早报清楚，不等到渲染深处才崩
+                raise NotImplementedError(f"type: clip（对象 {obj_id}）只支持墨线后端，请用 --backend moxian（manim 后端不支持片段）")
 
     def usage_for(self, obj_id: str) -> tuple[bool, bool, bool]:
         return analysis.usage_for(self.doc, self.lifetimes, obj_id)
@@ -126,6 +130,10 @@ class BeatRunner:
         self.t = compiler.theme
         self.beat = beat
         self.timing = beat_timing
+        self.c.timing_beats[beat["id"]] = {
+            "cues": [{"start": round(s.start, 3), "end": round(s.end, 3)} for s in beat_timing.sentences],
+            "actions": [],
+        }
         self.objects = compiler.build_all()
         self.visible: dict[str, Mobject] = {}
         self.focus_boxes: dict[str, VGroup] = {}
@@ -264,6 +272,8 @@ class BeatRunner:
             if late > CUE_LATE and self.scene.time > 0.5:
                 self.c.log(f"CUE LATE {self.beat['id']}[{head.get('at')}] 画面比旁白晚 {late:.1f}s")
             self.wait_until(at)
+            self.c.timing_beats[self.beat["id"]]["actions"].append(
+                {"at": head["at"], "want": round(at, 3), "start": round(self.scene.time, 3)})
         anims: list[Animation] = []
         run_time = 0.0
         for action in batch:

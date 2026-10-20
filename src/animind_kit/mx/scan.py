@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
+from moxian.clip import ClipNode, place
 from moxian.core import Camera, Node, Style
 from moxian.core import transform as T
 from moxian.text import Tex, Text
@@ -43,7 +44,9 @@ def flatten(path, m: np.ndarray) -> tuple[list[np.ndarray], list[bool]]:
     return curves, closed
 
 
-def scan(root: Node, labels: dict[int, Label], camera: Camera | None = None, min_opacity: float = 0.15) -> list[Thing]:
+def scan(root: Node, labels: dict[int, Label], camera: Camera | None = None, min_opacity: float = 0.15,
+         time: float | None = None) -> list[Thing]:
+    """time：成片时刻（beat 内）。片段还没开始（早于 start）时不画，不参与检查；None 表示不看开始时刻。"""
     cam = None if camera is None or camera.is_identity() else camera
     things: list[Thing] = []
     fixed_flags: list[bool] = []
@@ -75,6 +78,13 @@ def scan(root: Node, labels: dict[int, Label], camera: Camera | None = None, min
             screen = cam.matrix @ m
         if isinstance(node, (Text, Tex)) and run is None:
             run = (node, screen, trail)
+        if isinstance(node, ClipNode) and label is not None and node.opacity * style.opacity >= min_opacity:
+            # 片段：实际画出来的矩形（fit 之后的目标区域）当成填充图形（act="plate"）。
+            # 文字在它上面没问题；文字在它下面（z 更低）会被它盖住，报 covered
+            rect = _shown_rect(node, time)
+            if rect is not None:
+                things.append(_plate(rect, label, screen, node.opacity * style.opacity, not fixed))
+                fixed_flags.append(fixed)
         path = getattr(node, "path", None)
         if path is not None and not path.is_empty() and style.visible() and label is not None:
             fill = style.fill_opacity * style.opacity if style.fill is not None else 0.0
@@ -111,3 +121,38 @@ def scan(root: Node, labels: dict[int, Label], camera: Camera | None = None, min
     for order, i in enumerate(seq):
         things[i].order = order
     return things
+
+
+def _shown_rect(node: ClipNode, time: float | None) -> tuple[float, float, float, float] | None:
+    """片段在时刻 time 实际画出来的矩形（本地坐标）。还没开始是 None。
+
+    尺寸取自 time 这一刻真正画的那一帧（frame_index_at 已经算了 trim 和循环），和 renderer 的 paint_raster 一样：
+    帧序列的各帧尺寸可以不同。fit 决定画面占槽位的哪一块：contain 留白，cover 和 stretch 占满。
+    """
+    index = None
+    if time is not None:
+        index = node.frame_index_at(time)
+        if index is None:
+            return None
+    width, height = _source_size(node, index)
+    return place(node.plate, width, height, node.fit).dest
+
+
+def _source_size(node: ClipNode, index: int | None) -> tuple[float, float]:
+    """第 index 帧的宽高（像素）。视频的容器宽高不随帧变；帧序列取那一帧（index 为 None 时取第一帧）。"""
+    source = node.source()
+    if hasattr(source, "width"):
+        return source.width, source.height
+    image = source.frame(0 if index is None else index)
+    return image.width(), image.height()
+
+
+def _plate(rect: tuple[float, float, float, float], label: Label, screen: np.ndarray, fill: float,
+           follows: bool) -> Thing:
+    """片段的矩形（本地坐标 x0, y0, x1, y1）换到画面上，当成一块填充。只为了出界和遮挡检查，不画它的像素。"""
+    x0, y0, x1, y1 = rect
+    corners = np.array([[x0, y0], [x1, y0], [x1, y1], [x0, y1]], dtype=float)
+    pts = T.apply(screen, corners)
+    lo, hi = pts.min(axis=0), pts.max(axis=0)
+    return Thing("shape", label.owner, label.obj, (float(lo[0]), float(lo[1]), float(hi[0]), float(hi[1])), 0,
+                 act="plate", curves=[pts], closed=[True], stroked=False, fill=fill, follows=follows)

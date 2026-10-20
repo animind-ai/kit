@@ -13,6 +13,11 @@
 
 只给一个三角形（count: 1）时画一个单独的直角三角形，标出 a、b、c，用在开头的钩子里。
 
+kind: square 是边长 side 的大正方形，画法和 right_triangles（count 4）一样：四个三角形拼成它，slide 等动作照常。
+side 要写成 "a+b"（两条直角边之和，legs 缺省时是 3 + 4），或者等于两条直角边之和的数。
+注意 scene-spec/docs/design.md §11.2 把大正方形（kind: square）和三角形（kind: right_triangles, within: 它）分开写；
+这里暂时合成一个对象，因为 examples/clip-hook.scene.yaml 直接对 square 做 slide。要拆开还需要另定设计。
+
 暴露的子元素：
 - items / tri：四个三角形（可以 show pyth[0]、focus pyth.tri[1]）；
 - hole：空白区域 [c², a², b²]，每项是填色 + 名字，一开始隐藏；
@@ -43,6 +48,18 @@ Point = tuple[float, float]
 
 
 # ---------- 纯几何（大正方形占 [0, a+b]²，测试直接用这些函数）----------
+
+def _check_square_side(side, legs, obj_id: str) -> None:
+    """kind: square 的 side：写 "a+b"，或等于两条直角边之和的数。别的写法画不出对应的正方形，直接报错。"""
+    if side is None:
+        return
+    total = float(legs[0]) + float(legs[1])
+    if isinstance(side, str) and side.replace(" ", "") == "a+b":
+        return
+    if isinstance(side, (int, float)) and not isinstance(side, bool) and math.isclose(side, total):
+        return
+    raise ValueError(f"area_model kind: square 的 side 应为 \"a+b\" 或等于 legs 之和 {total:g}，收到 {side!r}（对象 {obj_id}）")
+
 
 def rotate(v: Point, degrees: float) -> Point:
     r = math.radians(degrees)
@@ -223,8 +240,10 @@ class AreaModel(Widget):
     def build(self) -> Built:
         d = self.definition
         kind = d.get("kind")
-        if kind != "right_triangles":
-            raise NotImplementedError(f"kit（墨线）的 area_model 目前只支持 kind: right_triangles（对象 {self.obj_id}）")
+        if kind not in ("right_triangles", "square"):
+            raise NotImplementedError(f"kit（墨线）的 area_model 目前只支持 kind: right_triangles / square（对象 {self.obj_id}）")
+        if kind == "square":
+            _check_square_side(d.get("side"), d.get("legs", [3, 4]), self.obj_id)
         a, b = (float(x) for x in d.get("legs", [3, 4]))
         self.k = self.SIDE / (a + b)
         self.a, self.b = a * self.k, b * self.k
@@ -232,7 +251,7 @@ class AreaModel(Widget):
         self.layout = d.get("layout", "four_around_c")
         if self.layout not in LAYOUTS:
             raise KeyError(f"area_model 没有摆法 {self.layout!r}（有 {' / '.join(LAYOUTS)}）")
-        self.count = int(d.get("count", 4))
+        self.count = 4 if kind == "square" else int(d.get("count", 4))
         t = self.theme
         self.ink = t.color(d.get("role"), t.A)
         if self.count == 1:

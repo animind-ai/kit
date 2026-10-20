@@ -13,6 +13,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from scene_spec import check_timing, pauses
+
 _BOOKMARK = re.compile(r"\{@([A-Za-z_][A-Za-z0-9_]*)\}")
 
 
@@ -73,12 +75,14 @@ def load(beat: dict, audio_dir: Path | None) -> BeatTiming:
             words = data.get("words", {})
             if len(cues) != len(say):
                 raise ValueError(f"{path.name} 有 {len(cues)} 句，scene 里 {beat['id']} 有 {len(say)} 句")
-    if cues is None:  # 没有音频：按每个汉字 0.22 秒估
+    if cues is None:  # 没有音频：按每个汉字 0.22 秒估；句间静音和 voice 合成的一样，按句末标点（scene-spec 的 silence_after）
         cues, cursor = [], 0.3
-        for s in say:
+        for i, s in enumerate(say):
             seconds = max(1.0, len(_BOOKMARK.sub("", s["text"])) * 0.22)
             cues.append({"start": cursor, "end": cursor + seconds})
-            cursor += seconds + 0.35
+            cursor += seconds
+            if i < len(say) - 1:  # 最后一句之后不插静音，和 voice 一致
+                cursor += pauses.silence_after(s["text"], s.get("hold"))
         total = cursor
     sentences = []
     for i, (s, cue) in enumerate(zip(say, cues)):
@@ -91,3 +95,19 @@ def load(beat: dict, audio_dir: Path | None) -> BeatTiming:
         source = "aligned"
     hold = beat.get("pause", {}).get("hold", 0) if "pause" in beat else 0
     return BeatTiming(sentences, max(total, hold + 1.0), source)
+
+
+def timing_issues(doc: dict, report: dict) -> list[str]:
+    """时间报告过 scene-spec 的 check_timing：SS480（画面晚于书签）、SS481（格式）、SS487（句间静音）。
+
+    返回错误的文字，没有就是空列表。allow_late、style.quality.cue_late、豁免名单都由 scene-spec 按文档处理。
+    """
+    return [str(issue) for issue in check_timing(doc, report).errors]
+
+
+def write_report(path: Path, beats: dict) -> Path:
+    """timing-report.json：{"beats": {<beat id>: {"cues": [{start, end}...], "actions": [{at, want, start}...]}}}。
+    时刻是旁白的音频时钟（秒，相对 beat 开头），和 CUE LATE 的计算一样：start 是画面实际开始，want 是书签。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"beats": beats}, ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
