@@ -56,7 +56,8 @@ DEFAULT_DUR = {
 }
 CAMERA_ZOOM = 2.0  # camera 只给 target 时的默认放大倍数
 CAMERA_MARGIN = 0.5  # fit 时四周留白（画面单位）
-CAMERA_EXEMPT_REGIONS = ("top", "footer")  # 这些区域的对象不跟镜头走
+CAMERA_EXEMPT_REGIONS = ("top", "footer")
+V2_MIN_FONT = 40.5  # v2 版式的全局字号下限（1080p 像素，= font_size 22）  # 这些区域的对象不跟镜头走
 WIDGET_DUR = 0.5
 LEVELS = {"display": 1.5, "title": 1.25, "body": 1.0, "caption": 0.75}  # scene-spec 的 level → 字号倍数
 # 讲座版式（style.layout: lecture）的字号照编程课的 cs_style：正文 30、公式 40，标题页大字 80
@@ -198,7 +199,7 @@ class MoxianCompiler:
         self.params = {k: Param(v, k) for k, v in spec_params.initial(doc).items()}
         self.lifetimes = analysis.lifetimes(doc)
         # 字号下限（数轴标注、侧栏、练一练框）：按成片算，烧录字幕时画面整体缩小，下限相应抬高
-        self.floors = lint.floors(subtitles.picture_scale(subtitles.mode(doc)))
+        self.floors = lint.floors(subtitles.picture_scale(subtitles.mode(doc), subtitles.one_line(doc)))
         self.stack_scale: dict[str, float] = {}
         self.pinned_floor: float | None = None
         self.root = Group(name="root")
@@ -218,7 +219,9 @@ class MoxianCompiler:
         self.followers: dict[int, tuple[Node, Node, Node, np.ndarray]] = {}
         self.ignore_pairs: set[frozenset[str]] = set()
         self.problems: list[str] = []
-        self.lint_config = lint.Config(min_font=float(doc.get("style", {}).get("min_font", lint.Config.min_font)),
+        # v2：任何画面文字 font_size ≥ 22（≈ 27px@720 = 40.5px@1080）
+        default_min = V2_MIN_FONT if self.template == "v2" else lint.Config.min_font
+        self.lint_config = lint.Config(min_font=float(doc.get("style", {}).get("min_font", default_min)),
                                        floors=self.floors)
         self.allow = lint.Allow.from_doc(doc)
         self.tracker = lint.Tracker()
@@ -592,7 +595,7 @@ class MoxianCompiler:
 
     def _end_checks(self, beat_id: str, plan: _Plan) -> None:
         pinned = {k for k, v in self.objects.items() if v.definition.get("pin")} | self.seg.pinned
-        found = layout.check(self.visible, self.ignore_pairs, pinned)
+        found = layout.check(self.visible, self.ignore_pairs, pinned, self.template)
         if plan.inner.schedules:  # 参数采样按逻辑时刻，用定格之前的时间线
             found += self._param_layout(plan.inner, plan.snapshots, pinned, {p.split("（")[0] for p in found})
         for problem in found:
@@ -679,7 +682,7 @@ class MoxianCompiler:
             for p in final:
                 p.set(tl.param_at(p, t))
             values = "，".join(f"{p.name}={p.value:.3g}" for p in final)
-            for problem in layout.check(visible, self.ignore_pairs, pinned):
+            for problem in layout.check(visible, self.ignore_pairs, pinned, self.template):
                 key = problem.split("（")[0]
                 if key not in seen:
                     seen.add(key)
@@ -982,6 +985,15 @@ class MoxianCompiler:
                 left, right = self._circle_room(node, box)
                 deco.path = rounded_rect(box.width + left + right, box.height + 0.2, 0.12)
                 deco.move_to(box.center + np.array([(right - left) / 2, 0.0]))
+            elif self.template == "v2":
+                # v2：错的一律删除线 + 右边一个 ✗（字体里没有 ✗，画两笔）；不再整块打叉，字还认得出
+                y = (box.y0 + box.y1) / 2
+                size = min(0.5, max(0.25, box.height * 0.7))
+                whole = self.wbox(self.objects[selectors.parse(target).obj].node)  # ✗ 放在整个对象右边，不压住句末的问号
+                x = max(box.x1, whole.x1) + 0.18
+                deco.path = (line(box.x0 - 0.04, y, box.x1 + 0.04, y)
+                             .extend(line(x, y - size / 2, x + size, y + size / 2))
+                             .extend(line(x, y + size / 2, x + size, y - size / 2)))
             else:
                 deco.path = line(box.x0, box.y0, box.x1, box.y1).extend(line(box.x0, box.y1, box.x1, box.y0))
             self._attach(deco, self.root, node)

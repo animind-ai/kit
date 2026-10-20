@@ -206,9 +206,17 @@ def mode(doc: dict, override: str | None = None) -> str:
     return value
 
 
-def picture_scale(subtitle_mode: str) -> float:
-    """成片里画面内容相对渲染画面的缩放：烧录字幕时让出字幕带，其余模式不缩。"""
+def picture_scale(subtitle_mode: str, one_line: bool = False) -> float:
+    """成片里画面内容相对渲染画面的缩放：烧录字幕时让出字幕带，其余模式不缩。
+    one_line（v2 版式）：字幕压成一行叠在画面底部预留的字幕带里，画面不缩。"""
+    if one_line:
+        return 1.0
     return 1.0 - BAND if subtitle_mode == "burned" else 1.0
+
+
+def one_line(doc: dict) -> bool:
+    """v2 版式（style.layout: v2）烧录一行字幕。"""
+    return doc.get("style", {}).get("layout") == "v2"
 
 
 @dataclass
@@ -520,6 +528,106 @@ def burn(video: Path, cues: list[Cue], out: Path, background: str, ink: str, wor
     playlist.write_text("\n".join(lines) + "\n", encoding="utf-8")
     graph = (f"[0:v]scale={inner_w}:{inner_h},pad={w}:{h}:{(w - inner_w) // 2}:0:color={background}[v];"
              f"[1:v]format=yuv420p[s];[v][s]overlay=0:{inner_h}:eof_action=repeat[o]")
+    subprocess.run([
+        "ffmpeg", "-y", "-v", "error", "-i", str(video), "-f", "concat", "-safe", "0", "-i", str(playlist),
+        "-filter_complex", graph, "-map", "[o]", "-map", "0:a", "-c:v", "libx264", "-preset", "veryfast",
+        "-crf", "20", "-pix_fmt", "yuv420p", "-c:a", "copy", "-shortest", str(out),
+    ], check=True)
+    return out
+
+
+ONE_LINE_BAND = 0.075  # v2：一行字幕带占画面高度的比例（720p 下 54px，= regions.SUBTITLE_STRIP["v2"] 0.6 单位）
+ONE_LINE_ZH, ONE_LINE_EN = 0.56, 0.52  # 中文 / 英文字号占带高的比例（720p 约 30px / 28px，英文比原来的 24px 大）
+ONE_LINE_FLOOR_720 = 27.0  # 任何字幕字号不低于 font_size 22 对应的 720p 像素
+
+
+def _split_cue(c: Cue) -> list[Cue]:
+    """一行放不下：中文在最靠中间的标点（没有就正中）切开，英文在最靠中间的空格切开，时间按中文字数比例分。"""
+    t = c.text
+    mid = len(t) / 2
+    cands = [i + 1 for i, ch in enumerate(t[:-1]) if ch in BREAK or ch in "，、 "] or [len(t) // 2]
+    cut = min(cands, key=lambda i: abs(i - mid))
+    cut = max(1, min(len(t) - 1, cut))
+    a, b = t[:cut].strip().rstrip("".join(DROP_TAIL)), t[cut:].strip()
+    words = c.en.split()
+    if len(words) >= 2:
+        k = max(1, min(len(words) - 1, round(len(words) * cut / max(1, len(t)))))
+        ea, eb = " ".join(words[:k]), " ".join(words[k:])
+    else:
+        ea, eb = c.en, ""
+    tm = c.start + (c.end - c.start) * cut / max(1, len(t))
+    return [Cue(c.start, tm, a or t, ea), Cue(tm, c.end, b or t, eb or ea)]
+
+
+def burn_one_line(video: Path, cues: list[Cue], out: Path, background: str, ink: str, work: Path) -> Path:
+    """v2 烧录：画面不缩，底部 ONE_LINE_BAND 高的一条字幕带盖在画面上（版式已经给它留了空），
+    中文和英文排在同一行（中文在前、英文字号略小、颜色是 FG 75% 混 BG）。一行放不下就把这一条按时间切成两条。"""
+    import skia
+    from moxian.text.font import typeface
+
+    w, h = (int(x) for x in subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height",
+         "-of", "csv=p=0", str(video)], check=True, capture_output=True, text=True).stdout.strip().split(","))
+    band = int(round(h * ONE_LINE_BAND / 2)) * 2
+    work.mkdir(parents=True, exist_ok=True)
+    face = typeface("Noto Sans CJK SC")
+    zh_size, en_size = band * ONE_LINE_ZH, band * ONE_LINE_EN
+    floor = ONE_LINE_FLOOR_720 * h / 720
+    max_w = w * TEXT_WIDTH
+    r, g, b, _ = _rgb(ink)
+    br, bg_, bb, _ = _rgb(background)
+    soft = skia.Color(int(r * 0.75 + br * 0.25), int(g * 0.75 + bg_ * 0.25), int(b * 0.75 + bb * 0.25), 255)
+    zh_paint = skia.Paint(Color=skia.Color(r, g, b, 255), AntiAlias=True)
+    en_paint = skia.Paint(Color=soft, AntiAlias=True)
+
+    def widths(c: Cue, k: float) -> tuple[float, float, float]:
+        zw = skia.Font(face, zh_size * k).measureText(c.text)
+        ew = skia.Font(face, en_size * k).measureText(c.en) if c.en else 0.0
+        gap = zh_size * k * 1.2 if c.en else 0.0
+        return zw, gap, ew
+
+    def scale_for(c: Cue) -> float | None:
+        zw, gap, ew = widths(c, 1.0)
+        total = zw + gap + ew
+        k = min(1.0, max_w / total) if total else 1.0
+        return k if min(zh_size, en_size if c.en else zh_size) * k >= floor - 1e-6 else None
+
+    fitted: list[Cue] = []
+    todo = list(cues)
+    while todo:
+        c = todo.pop(0)
+        if scale_for(c) is None and len(c.text) > 1:
+            todo[:0] = _split_cue(c)
+        else:
+            fitted.append(c)
+
+    def card(cue: Cue | None, name: str) -> Path:
+        surface = skia.Surface(w, band)
+        with surface as canvas:
+            canvas.clear(skia.Color(*_rgb(background)))
+            if cue is not None:
+                k = scale_for(cue) or floor / min(zh_size, en_size)
+                zw, gap, ew = widths(cue, k)
+                x = (w - (zw + gap + ew)) / 2
+                base = band * 0.70
+                canvas.drawString(cue.text, x, base, skia.Font(face, zh_size * k), zh_paint)
+                if cue.en:
+                    canvas.drawString(cue.en, x + zw + gap, base, skia.Font(face, en_size * k), en_paint)
+        path = work / f"{name}.png"
+        surface.makeImageSnapshot().save(str(path), skia.kPNG)
+        return path
+
+    blank = card(None, "blank")
+    lines, t = [], 0.0
+    for n, c in enumerate(fitted):
+        if c.start > t:
+            lines += [f"file '{blank.resolve()}'", f"duration {c.start - t:.3f}"]
+        lines += [f"file '{card(c, f'cue{n:04d}').resolve()}'", f"duration {c.end - c.start:.3f}"]
+        t = c.end
+    lines += [f"file '{blank.resolve()}'", "duration 1.000", f"file '{blank.resolve()}'"]
+    playlist = work / "bands.txt"
+    playlist.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    graph = f"[1:v]format=yuv420p[s];[0:v][s]overlay=0:{h - band}:eof_action=repeat[o]"
     subprocess.run([
         "ffmpeg", "-y", "-v", "error", "-i", str(video), "-f", "concat", "-safe", "0", "-i", str(playlist),
         "-filter_complex", graph, "-map", "[o]", "-map", "0:a", "-c:v", "libx264", "-preset", "veryfast",

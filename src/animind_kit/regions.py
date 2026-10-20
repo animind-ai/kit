@@ -40,7 +40,12 @@ class Region:
 TEMPLATES = {
     "default": {"top": 2.6, "side": SIDE_WIDTH},
     "lecture": {"top": 1.4, "side": (FRAME_WIDTH - 2 * MARGIN - 0.4) / 2},
+    # v2（培玉视觉规范 v2，2026-10-20）：没有右侧栏，side 的内容并进顶上一条窄带（与 top 同一块），
+    # stage 占满整个宽度；底部留一条一行字幕带（画面不再整体缩小，见 subtitles.ONE_LINE_BAND）。
+    "v2": {"top": 1.0, "side": 0.0},
 }
+# 每个模板在画面底部给烧录字幕留的高度（单位）。v2：一行字幕带 54px@720 = 0.6 单位，再空 0.1。
+SUBTITLE_STRIP = {"v2": 0.6}
 
 
 def regions(top_used: bool = True, side_used: bool = True, footer_used: bool = True,
@@ -48,6 +53,18 @@ def regions(top_used: bool = True, side_used: bool = True, footer_used: bool = T
     """四个区域。没人用 top / side / footer 时，stage 把那块空间也占上。"""
     w, h = FRAME_WIDTH, FRAME_HEIGHT
     left, right, top, bottom = -w / 2 + MARGIN, w / 2 - MARGIN, h / 2 - MARGIN, -h / 2 + MARGIN
+    if template == "v2":
+        bottom = -h / 2 + SUBTITLE_STRIP["v2"] + 0.1
+        band = TEMPLATES["v2"]["top"]
+        header = top_used or side_used  # side 就在顶栏里
+        stage_top = top - band - 0.2 if header else top
+        stage_bottom = bottom + 1.1 if footer_used else bottom
+        return {
+            "top": Region("top", left, right, top - band, top),
+            "stage": Region("stage", left, right, stage_bottom, stage_top),
+            "side": Region("side", left, right, top - band, top),
+            "footer": Region("footer", left, right, bottom, bottom + 1.0),
+        }
     band, side = TEMPLATES[template]["top"], TEMPLATES[template]["side"]
     gap = 0.2 if template == "default" else 0.4
     stage_top = top - band - 0.2 if top_used else top
@@ -62,15 +79,16 @@ def regions(top_used: bool = True, side_used: bool = True, footer_used: bool = T
 
 
 def check_boxes(boxes: dict[str, tuple[float, float, float, float]], ignore_pairs: set[frozenset[str]],
-                pinned: set[str] = frozenset()) -> list[str]:
+                pinned: set[str] = frozenset(), template: str = "default") -> list[str]:
     """boxes: 名字 → (x0, x1, y0, y1)。返回出框 / 重叠的描述。"""
     from itertools import combinations
 
     problems = []
     w, h = FRAME_WIDTH / 2 - MARGIN + 0.05, FRAME_HEIGHT / 2 - MARGIN + 0.05
+    low = FRAME_HEIGHT / 2 - SUBTITLE_STRIP[template] - 0.05 if template in SUBTITLE_STRIP else h  # 不许压进字幕带
     for name, (x0, x1, y0, y1) in boxes.items():
         top = FRAME_HEIGHT / 2 - 0.1 if name in pinned else h
-        if x0 < -w or x1 > w or y0 < -h or y1 > top:
+        if x0 < -w or x1 > w or y0 < -low or y1 > top:
             problems.append(f"{name} 超出安全边距（x {x0:.2f}..{x1:.2f}，y {y0:.2f}..{y1:.2f}）")
     for a, b in combinations(boxes, 2):
         if frozenset((a, b)) in ignore_pairs:
