@@ -1,6 +1,6 @@
 """对 scene-spec 文档的静态分析，不依赖任何渲染后端。
 
-- 每个对象在哪些 beat 可见（按 show / hide / transform-to 推算）；
+- 每个对象在哪些 beat 可见（按 show / hide / transform 推算；group 的成员算在整组头上）；
 - 对象活着的时候，top / side / footer 有没有被别人占用（决定主讲区能占多大）。
 """
 
@@ -11,12 +11,35 @@ from scene_spec import selectors
 LAYOUT_REFS = ("below", "above", "left_of", "right_of", "over", "within")
 
 
+def group_of(doc: dict) -> dict[str, tuple[str, int]]:
+    """group 的成员 → (直接所在的 group, 在 children 里的下标)。"""
+    out: dict[str, tuple[str, int]] = {}
+    for obj_id, d in doc.get("objects", {}).items():
+        if d.get("type") == "group" and "widget" not in d:
+            for i, child in enumerate(d.get("children") or []):
+                out.setdefault(child, (obj_id, i))
+    return out
+
+
+def top_of(doc: dict, obj_id: str) -> str:
+    """对象所在的最外层 group（不在 group 里就是它自己）：成员跟着整组出现、占区域。"""
+    owners = group_of(doc)
+    seen = {obj_id}
+    while obj_id in owners and owners[obj_id][0] not in seen:
+        obj_id = owners[obj_id][0]
+        seen.add(obj_id)
+    return obj_id
+
+
 def region_static(doc: dict, obj_id: str, depth: int = 0) -> str:
     d = doc["objects"][obj_id]
     if d.get("pin") == "top":
         return "top"
     if "in" in d:
         return d["in"]
+    top = top_of(doc, obj_id)
+    if top != obj_id and depth < 10:  # group 的成员：在整组所在的区域
+        return region_static(doc, top, depth + 1)
     for key in LAYOUT_REFS:
         if key in d and depth < 10:
             return region_static(doc, selectors.parse(d[key]).obj, depth + 1)
@@ -36,17 +59,20 @@ def lifetimes(doc: dict) -> dict[str, set[int]]:
         for action in beat.get("do", []):
             act = action["act"]
             if act == "show":
-                obj = selectors.parse(action["target"]).obj
+                obj = top_of(doc, selectors.parse(action["target"]).obj)
                 visible.add(obj)
                 shown.add(obj)
             elif act == "hide":
                 sel = selectors.parse(action["target"])
-                if sel.span is None and sel.part is None and sel.index is None:
+                if sel.span is None and sel.part is None and sel.index is None and top_of(doc, sel.obj) == sel.obj:
                     visible.discard(sel.obj)
             elif act == "transform":
-                obj = selectors.parse(action["to"]).obj
+                obj = top_of(doc, selectors.parse(action["to"]).obj)
                 visible.add(obj)
                 shown.add(obj)
+                gone = selectors.transform_replaced(action)  # replace：源被替换掉
+                if gone is not None and top_of(doc, gone) == gone:
+                    visible.discard(gone)
         for k in visible | shown:
             life[k].add(n)
     return life

@@ -24,6 +24,7 @@ from moxian.anim import (
     Restyle,
     Shift,
     TransformCopy,
+    TransformMatching,
     Wait,
     Write,
     easing,
@@ -35,7 +36,7 @@ from moxian.anim.camera import focus_on
 from moxian.anim.camera import reset as camera_reset
 from moxian.anim.timeline import Timeline
 from moxian.clip import ClipNode
-from moxian.core import BBox, Camera, Group, Node, PathNode, Style, parent_matrix_of
+from moxian.core import RIGHT, BBox, Camera, Group, Node, PathNode, Style, parent_matrix_of
 from moxian.encode import render_video
 from moxian.path import Path as VPath
 from moxian.path import line, rounded_rect
@@ -44,10 +45,12 @@ from moxian.text import Tex, Text
 from scene_spec import params as spec_params
 from scene_spec import segments as spec_segments
 from scene_spec import selectors
+from scene_spec.textmarks import parse_object_text
 
 from .. import analysis, beat_cache, lint, segments, subtitles, timing
 from ..mx import layout, scan, widgets
 from ..mx.readout import Readout
+from ..mx.shape import build_shape
 from ..mx.text import SCALE, mmath, rich
 from ..regions import Region
 from ..theme import Theme
@@ -213,12 +216,16 @@ class MoxianCompiler:
         self.clip_t0: dict[str, float] = {}  # 片段在整支片子里开始播的时刻（秒），第一次 show 时定
         self.timing_beats: dict[str, dict] = {}  # 时间报告：每个 beat 的句子时刻和带 at 的动作批次
         self.objects: dict[str, Built] = {}
+        self.group_of = analysis.group_of(doc)  # group 的成员 → (group, 下标)；成员建在 group 里，不直接挂在根上
         for obj_id, definition in doc.get("objects", {}).items():
+            if obj_id in self.group_of:  # group 的成员由 group 递归建
+                continue
             built = self.build_object(obj_id, definition)
             built.node.set_style(opacity=0.0)
             self.root.add(built.node)
             self.objects[obj_id] = built
         self.visible: dict[str, Node] = {}
+        self.opened: set[int] = set()  # 已经"打开"（亮出来、成员先藏起）的 group 成员节点，见 _open
         self.focus_boxes: dict[str, Node] = {}
         self.dimmed: dict[str, list[Node]] = {}
         self.marks: dict[str, Node] = {}
@@ -283,7 +290,42 @@ class MoxianCompiler:
             return Built(Readout(definition, t, self.params, max(36 * level, floor)).node, definition)
         if kind == "clip":
             return Built(self._build_clip(obj_id, definition), definition)
+        if kind == "shape":
+            return Built(build_shape(definition, t, max(32 * level, floor), name=obj_id), definition)
+        if kind == "group":
+            return self._build_group(obj_id, definition)
         raise NotImplementedError(f"kit（墨线）0.1 还不支持 type: {kind}（对象 {obj_id}）")
+
+    def _build_group(self, obj_id: str, d: dict) -> Built:
+        """type: group：成员按顺序递归建好（成员自己也可以是 group），在组内排开，整组当一个对象排版。
+
+        成员写了 below / above / left_of / right_of 且指向组内已经排好的成员时按它摆，否则接在上一个成员右边。
+        成员登记在 self.objects 里（可以单独 focus、mark 它），但不挂在根上；obj[i] 是第 i 个成员。
+        """
+        items: list[Node] = []
+        placed: dict[str, Node] = {}
+        for child in d["children"]:
+            if child in self.objects:
+                raise ValueError(f"{obj_id}：成员 {child} 已经在别的 group 里（或 group 嵌套成环）")
+            built = self.build_object(child, self.doc["objects"][child])
+            self.objects[child] = built
+            node = built.node
+            cd = built.definition
+            ref = next(((key, selectors.parse(cd[key]).obj) for key in layout.DIRECTIONS
+                        if key in cd and selectors.parse(cd[key]).obj in placed), None)
+            if ref is not None:
+                key, other = ref
+                node.next_to(placed[other].edge(layout.DIRECTIONS[key]), layout.DIRECTIONS[key], layout.GAPS[cd.get("gap", "md")])
+                if key in ("below", "above"):
+                    node.shift([placed[other].center()[0] - node.center()[0], 0.0])
+                else:
+                    node.shift([0.0, placed[other].center()[1] - node.center()[1]])
+            elif items:
+                node.next_to(items[-1], RIGHT, layout.GAPS["md"])
+            placed[child] = node
+            items.append(node)
+            built.placed = True
+        return Built(Group(*items, name=obj_id), d, items=items)
 
     def _is_clip(self, obj_id: str) -> bool:
         return self.doc.get("objects", {}).get(obj_id, {}).get("type") == "clip"
@@ -335,6 +377,8 @@ class MoxianCompiler:
         em = w.label_size * SCALE * self.world_scale(built.node)
         if not target or em >= target - 0.05:
             return False
+        if not any(n is built.node for n in self.root.children):
+            return False  # 在 group 里：整组一起排版，不单独重建
         fresh = self._build_object(obj_id, built.definition, {"label_size": w.label_size * target / em * 1.01})
         fresh.node.font_floor = getattr(built.node, "font_floor", None)
         fresh.node.set_style(opacity=0.0)
@@ -477,6 +521,9 @@ class MoxianCompiler:
 
     def place(self, obj_id: str, attempt: int = 0) -> Node:
         built = self.objects[obj_id]
+        if obj_id in self.group_of:  # group 的成员：随整组排版
+            self.place(analysis.top_of(self.doc, obj_id))
+            return built.node
         if built.placed:
             return built.node
         d = built.definition
@@ -920,17 +967,12 @@ class MoxianCompiler:
             style = action.get("style", "fade")
             dur = 1.0 if style == "write" else DEFAULT_DUR["show"]
             if sel.span is None and sel.part is None and sel.index is None:
-                self.visible[sel.obj] = node
+                self._reveal(sel.obj)
                 if style == "write":
                     return [Write(node, dur)], dur
                 return [fade_in(node, dur, shift=(0.0, -0.1))], dur
             # 只显示对象里的某几项：第一次先把对象亮出来、其余项藏起来，之后只淡入指定的项
-            built = self.objects[sel.obj]
-            if sel.obj not in self.visible:
-                built.node.set_style(opacity=1.0)
-                for item in built.items:
-                    item.set_style(opacity=0.0)
-                self.visible[sel.obj] = built.node
+            self._open(sel.obj)
             return [fade_in(n, dur, shift=(0.0, -0.1)) for n in self._members(node)], dur
         if act == "hide":
             sel = selectors.parse(action["target"])
@@ -939,18 +981,9 @@ class MoxianCompiler:
                 return [fade_out(n, DEFAULT_DUR["hide"]) for n in self._members(node)], DEFAULT_DUR["hide"]
             if self._is_clip(sel.obj):
                 return [fade_out(node, DEFAULT_DUR["hide"])], DEFAULT_DUR["hide"]
-            extras = self._drop_overlays(sel.obj)
-            self.visible.pop(sel.obj, None)
-            return ([fade_out(node, DEFAULT_DUR["hide"])] + [self._overlay_out(e, DEFAULT_DUR["hide"]) for e in extras]
-                    + self._unghost(sel.obj), DEFAULT_DUR["hide"])
+            return self._vanish(sel.obj, DEFAULT_DUR["hide"]), DEFAULT_DUR["hide"]
         if act == "transform":
-            src = self.resolve(action["from"])
-            dst = self.resolve(action["to"], place=True)
-            to_sel = selectors.parse(action["to"])
-            # 记整个对象的节点：变到某个片段上时，dst 可能是不在树里的临时容器，拿它算包围盒会误报重叠
-            self.visible[to_sel.obj] = self.objects[to_sel.obj].node
-            d = DEFAULT_DUR["transform"]
-            return [TransformCopy(self._members(src), dst, self.root, d)], d
+            return self._transform(action), DEFAULT_DUR["transform"]
         if act == "focus":
             return self._focus(action["target"]), DEFAULT_DUR["focus"]
         if act == "unfocus":
@@ -1000,6 +1033,87 @@ class MoxianCompiler:
         sel = selectors.parse(action["target"])
         built = self.objects[sel.obj]
         return built.widget.action(act, args), WIDGET_DUR
+
+    def _reveal(self, obj_id: str) -> None:
+        """整个对象要出现了：登记进 visible。group 的成员不单独登记，而是打开它所在的组（等于 show group[i]）。"""
+        if obj_id in self.group_of:
+            self._open(self.group_of[obj_id][0])
+        else:
+            self.visible[obj_id] = self.objects[obj_id].node
+
+    def _open(self, obj_id: str) -> None:
+        """要显示对象里的某几项：第一次先把对象亮出来、其余项藏起来（之后再逐项淡入）。
+
+        对象本身是某个 group 的成员时，先把外层的组也这样打开（只亮出这一路上的成员）。
+        """
+        built = self.objects[obj_id]
+        if obj_id in self.group_of:
+            self._open(self.group_of[obj_id][0])
+            if id(built.node) in self.opened:
+                return
+            self.opened.add(id(built.node))
+        elif obj_id in self.visible:
+            return
+        else:
+            self.visible[obj_id] = built.node
+        built.node.set_style(opacity=1.0)
+        for item in built.items:
+            item.set_style(opacity=0.0)
+
+    def _vanish(self, obj_id: str, dur: float, fade: bool = True) -> list[Animation]:
+        """整个对象退场（hide，或被 transform replace 替换掉）：连同强调框、标记、装饰、残影一起收掉，不再算在画面上。"""
+        node = self.objects[obj_id].node
+        extras = self._drop_overlays(obj_id)
+        if obj_id not in self.group_of:
+            self.visible.pop(obj_id, None)
+            self.opened -= {id(n) for n in _subtree(node)}  # 再出现时组内成员重新按 show 的写法打开
+        return (([fade_out(node, dur)] if fade else []) + [self._overlay_out(e, dur) for e in extras]
+                + self._unghost(obj_id))
+
+    def _transform(self, action: dict) -> list[Animation]:
+        """from 变成 to。
+
+        - 默认（不写 match、match: shape）：TransformCopy，目标的每个字形从源里对应的字形变过来，源保持不动。
+        - match: tex，或 auto 且两边是有同名片段的整个对象：TransformMatching，同名片段平移 + 缩放过去，其余淡入淡出。
+        - replace（match: tex / auto 时默认是）：源在变形期间淡出、之后不在画面上（等于同时 hide 它）。
+        都不做中途采样：部件互相穿过是变形本来的样子。
+        """
+        d = DEFAULT_DUR["transform"]
+        src = self.resolve(action["from"])
+        dst = self.resolve(action["to"], place=True)
+        from_sel, to_sel = selectors.parse(action["from"]), selectors.parse(action["to"])
+        # 记整个对象的节点：变到某个片段上时，dst 可能是不在树里的临时容器，拿它算包围盒会误报重叠
+        self._reveal(to_sel.obj)
+        replace = selectors.transform_replaces(action) and src is not dst
+        gone = selectors.transform_replaced(action)
+        pairs = self._match_pairs(action, from_sel, to_sel)
+        if pairs is not None:
+            anims: list[Animation] = [TransformMatching(src, dst, pairs, self.root, d, keep_source=not replace)]
+        else:
+            anims = [TransformCopy(self._members(src), dst, self.root, d)]
+            if replace:
+                anims += [fade_out(n, d) for n in self._members(src)]
+        if gone is not None:
+            anims += self._vanish(gone, d, fade=False)  # 淡出上面已经有了；这里收掉叠加层、登记
+        return anims
+
+    def _match_pairs(self, action: dict, from_sel, to_sel) -> list[tuple[list[Node], list[Node], bool]] | None:
+        """match: tex / auto 的片段配对：(源片段的节点, 目标片段的节点, 内容是否不同)。配不了时 None（退回整体变形）。
+
+        只配整个对象对整个对象；按片段 id 配，同名片段的文字不同时交叉淡入淡出。
+        """
+        if action.get("match") not in ("tex", "auto"):
+            return None
+        whole = all(s.span is None and s.part is None and s.index is None for s in (from_sel, to_sel))
+        a, b = self.objects[from_sel.obj], self.objects[to_sel.obj]
+        common = [k for k in b.spans if k in a.spans] if whole and from_sel.obj != to_sel.obj else []
+        if not common:
+            if action.get("match") == "tex":
+                self.log(f"提示：transform {action['from']} → {action['to']} 没有可配对的同名片段，按整体变形")
+            return None
+        texts_a, texts_b = _span_texts(a.definition), _span_texts(b.definition)
+        return [(self._members(a.spans[k]), self._members(b.spans[k]),
+                 k not in texts_a or texts_a.get(k) != texts_b.get(k)) for k in common]
 
     # ---------- 分段：残影、子步、常驻 ----------
 
@@ -1309,6 +1423,13 @@ def _marked(anim: Animation):
         yield anim
     for _offset, sub in anim.children():
         yield from _marked(sub)
+
+
+def _span_texts(definition: dict) -> dict[str, str]:
+    """text 对象里每个带 id 的片段的原文（判断同名片段内容是否相同）；别的对象没有。"""
+    if definition.get("type") != "text" or "text" not in definition:
+        return {}
+    return {sp.id: sp.text for sp in parse_object_text(definition["text"]).spans if sp.id}
 
 
 def _subtree(node: Node):

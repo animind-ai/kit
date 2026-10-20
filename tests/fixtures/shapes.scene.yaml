@@ -1,0 +1,124 @@
+# 基础图形 type: shape（七种）、组合 type: group，以及 transform 的 match: tex / replace。
+# kit 的测试用：scene-spec check、animind-kit inspect、animind-kit render 都要干净地通过。
+spec: "0.1"
+
+meta:
+  id: shapes
+  title: 基础图形与按片段变形
+  line: worked
+  units: [S1]
+  author: Boxi Yu
+  license: CC-BY-4.0
+  sources:
+    - kind: other
+      cite: 原创
+
+pedagogy:
+  insight: 配方就是在原式两边补上同一个数，原来的项一个都没动
+  status: method
+  landing: Complete
+
+style:
+  theme: paper
+  canvas: "16:9"
+  voice:
+    persona: teacher-hs
+    speed: 1.0
+  subtitles: none
+
+objects:
+  title:
+    type: text
+    text: 基础图形
+    level: title
+    in: top
+  c:
+    type: shape
+    shape: circle
+    radius: 0.9
+    role: A
+    label: '$r$'
+  s:
+    type: shape
+    shape: square
+    side: 1.6
+    role: B
+    label: '$a^2$'
+  r:
+    type: shape
+    shape: rectangle
+    side: [2.4, 1.4]
+  p:
+    type: shape
+    shape: polygon
+    points: [[0, 0], [2, 0], [0.8, 1.6]]
+    role: C
+  l:
+    type: shape
+    shape: line
+    points: [[0, 0], [1.6, 1.2]]
+  a:
+    type: shape
+    shape: arrow
+    side: 1.8
+    role: HL
+    label: '$\vec v$'
+  d:
+    type: shape
+    shape: dot
+    radius: 0.1
+    role: NO
+    label: '$P$'
+  row:
+    type: group
+    children: [c, s, r, p]
+    in: stage
+  more:
+    type: group
+    children: [l, a, d]
+    below: row
+  e1:
+    type: text
+    text: '[$x^2$]{#a} $+$ [$2x$]{#b} $=0$'
+    level: title
+    in: stage
+  e2:
+    type: text
+    text: '[$x^2$]{#a} $+$ [$2x$]{#b} $+$ [$1$]{#c} $=$ [$1$]{#d}'
+    level: title
+    below: e1
+  done:
+    type: text
+    text: '$(x+1)^2=1$'
+    level: title
+    below: e2
+
+beats:
+  - id: Shapes
+    say:
+      - {id: s1, pace: normal, text: 圆、正方形、长方形和三角形排成一行。}
+      - {id: s2, pace: normal, text: 下面是一条线段、一个箭头和一个点。}
+    do:
+      - {at: s1, act: show, target: title}
+      - {with: prev, act: show, target: row}
+      - {at: s2, act: show, target: 'more[0]'}
+      - {after: prev, act: show, target: a}
+      - {after: prev, act: show, target: 'more[2]'}
+
+  - id: Complete
+    shows: landing
+    say:
+      - {id: s1, pace: normal, text: 两边同时加一。}
+      - {id: s2, pace: normal, text: 原来的两项一个都没动，只是挪了位置。}
+    do:
+      - {at: 0, act: hide, target: row}
+      - {with: prev, act: hide, target: more}
+      - {with: prev, act: hide, target: title}
+      - {at: s1, act: show, target: e1}
+      - {at: s2, act: transform, from: e1, to: e2, match: tex}
+
+  - id: Fold
+    say:
+      - {id: s1, pace: normal, text: 左边正好是一个完全平方。}
+    do:
+      - {at: s1, act: transform, from: e2, to: done, replace: true}
