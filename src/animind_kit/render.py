@@ -125,12 +125,13 @@ def export_subtitles(doc: dict, out: Path, clip_seconds: list[float], beat_info:
     cues = subtitles.build(doc, starts, beat_info)
     vtt, srt = subtitles.write(cues, out)
     bilingual = any(c.en for c in cues)
+    language = subtitles.track_language(doc)
     info = {"mode": mode, "vtt": vtt.name, "srt": srt.name, "cues": len(cues), "bilingual": bilingual}
     work = out.parent / f".build-{out.stem}-subtitles"
     if mode == "burned":
         clean = out.with_name(f"{out.stem}.clean.mp4")
         shutil.copyfile(out, clean)
-        subtitles.mux_soft(clean, srt)
+        subtitles.mux_soft(clean, srt, language)
         burning = out.with_name(f"{out.stem}.burning.mp4")
         subtitles.burn(out, cues, burning, theme.BG, theme.FG, work)
         burning.replace(out)
@@ -138,7 +139,7 @@ def export_subtitles(doc: dict, out: Path, clip_seconds: list[float], beat_info:
         log(f"字幕 {len(cues)} 条{'（中英双语）' if bilingual else ''} → 已烧进 {out.name}；"
             f"{vtt.name}、{srt.name}；画面干净的 {clean.name} 带软字幕轨")
         return info
-    subtitles.mux_soft(out, srt)
+    subtitles.mux_soft(out, srt, language)
     info["embedded"] = "mov_text"
     if burn:
         burned = out.with_name(f"{out.stem}.burned.mp4")
@@ -154,24 +155,42 @@ def beat_info_estimated(doc: dict, audio_dir: Path | None) -> dict:
 
     out = {}
     for beat in doc["beats"]:
-        bt = timing.load(beat, audio_dir)
+        bt = timing.load(beat, audio_dir, doc.get("style"))
         out[beat["id"]] = {"cues": [{"start": s.start, "end": s.end, "marks": s.marks, "words": s.words} for s in bt.sentences],
                            "steps": []}
     return out
 
 
-def load_spec(spec: Path, lang: str = "zh") -> dict:
-    """读场景文件；lang 不是中文时换成那种语言的版本（scene_spec.localize）。"""
+def source_lang(doc: dict) -> str:
+    """文件本身的语言：style.lang，默认 zh。
+
+    scene-spec 0.1 之后的版本自带 source_lang（animind-ai/scene-spec#2）；旧版没有时用同样的规则，
+    这样 kit 不依赖两边的合并顺序。旧版 scene-spec 的 localize 仍然要求每句都有 en。
+    """
+    try:
+        from scene_spec import source_lang as spec_source_lang
+    except ImportError:
+        return (doc.get("style") or {}).get("lang") or "zh"
+    return spec_source_lang(doc)
+
+
+def load_spec(spec: Path, lang: str | None = None) -> dict:
+    """读场景文件，换成 lang 那种语言的版本（scene_spec.localize）。
+
+    lang 不给就用文件本身的语言（style.lang，默认 zh）：直接用英文写的场景（style.lang: en）不需要 en 译句。
+    """
     from scene_spec import LocalizeError, localize
 
+    doc = load_file(spec)
+    lang = lang or source_lang(doc)
     try:
-        return localize(load_file(spec), lang)
+        return localize(doc, lang)
     except LocalizeError as exc:
         raise SystemExit(f"{spec.name} 没有完整的 {lang} 版：{exc}") from exc
 
 
 def inspect(spec: Path, audio_dir: Path | None, out_dir: Path | None, beats: list[str] | None = None,
-            quality: str = "m", log=print, lang: str = "zh") -> list:
+            quality: str = "m", log=print, lang: str | None = None) -> list:
     """不编码视频的快速版式检查（墨线后端）：打印问题列表；给了 out_dir 就写分镜图。
 
     采样点和 render 相同（每批动作结束后的第一帧、beat 末帧），quality 只决定帧率（采样落在哪一帧）。
@@ -196,10 +215,10 @@ def inspect(spec: Path, audio_dir: Path | None, out_dir: Path | None, beats: lis
 
 def render(spec: Path, out: Path, audio_dir: Path | None, quality: str = "l", only: list[str] | None = None, log=print,
            backend: str = "manim", burn_subtitles: bool = False, theme_name: str | None = None,
-           subtitles: str | None = None, lang: str = "zh") -> dict:
+           subtitles: str | None = None, lang: str | None = None) -> dict:
     """subtitles：覆盖 style.subtitles（burned / soft / none）；版式（字号下限）也按覆盖后的模式算。
 
-    lang：渲染哪种语言的版本（旁白音频要用同一个 lang 合成）；英文版字幕只有英文一行。
+    lang：渲染哪种语言的版本（默认文件本身的 style.lang；旁白音频要用同一个 lang 合成）；英文版字幕只有英文一行。
     """
     doc = load_spec(spec, lang)
     report = check(doc)

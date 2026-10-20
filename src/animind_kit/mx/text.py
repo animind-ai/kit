@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 
 from moxian.core import PX, Group, Node
 from moxian.text import Tex, Text, math
-from moxian.text.font import FULLWIDTH_PUNCT, is_han, spacing_adjustments
+from moxian.text.font import DEFAULT_FONT, FULLWIDTH_PUNCT, is_han, spacing_adjustments, typeface
 from scene_spec.textmarks import ROLES, Span, parse_object_text
 
 from ..theme import Theme
@@ -20,8 +20,40 @@ from ..theme import Theme
 SCALE = 1.4
 
 
+# 西文字体：英文场景（style.lang: en）里不含汉字的文字用它，标点和字距是西文的；按顺序取系统里第一款装了的
+LATIN_FONTS = ("Source Sans 3", "Inter", "Noto Sans", "Helvetica Neue", "DejaVu Sans", "Arial")
+_latin: list[str | None] = []
+_language = {"lang": "zh"}
+
+
+def latin_font() -> str | None:
+    """系统里第一款可用的西文字体（都没有时 None，照旧用中文字体）。"""
+    if not _latin:
+        for family in LATIN_FONTS:
+            try:
+                typeface(family)
+            except RuntimeError:
+                continue
+            _latin.append(family)
+            break
+        else:
+            _latin.append(None)
+    return _latin[0]
+
+
+def use_language(lang: str | None) -> None:
+    """编译一个场景前调用：lang == "en" 时普通文字改用西文字体（含汉字或全角标点的片段仍用中文字体）。"""
+    _language["lang"] = lang or "zh"
+
+
+def family_for(text: str) -> str:
+    if _language["lang"] != "en" or any(is_han(ch) or ch in FULLWIDTH_PUNCT for ch in text):
+        return DEFAULT_FONT
+    return latin_font() or DEFAULT_FONT
+
+
 def mtext(text: str, size: float, color: str, weight: str = "normal") -> Text:
-    return Text(text, size * SCALE, color, weight=weight)
+    return Text(text, size * SCALE, color, family=family_for(text), weight=weight)
 
 
 def mmath(tex: str, size: float, color: str) -> Node:
@@ -162,7 +194,7 @@ def _resolve_soft(parts: list[Node | Space]) -> list[Node | Space]:
             left = next((q for q in reversed(parts[:i]) if not isinstance(q, Space)), None)
             right = next((q for q in parts[i + 1 :] if not isinstance(q, Space)), None)
             if isinstance(left, Text) and isinstance(right, Text):
-                p = Space(Text(" ", left.em / PX).advance)
+                p = Space(Text(" ", left.em / PX, family=left.family).advance)
             elif _cjk_edge(left, -1) or _cjk_edge(right, 0):
                 continue
         out.append(p)

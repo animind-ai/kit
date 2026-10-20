@@ -1,0 +1,10 @@
+cff-version: 1.2.0
+message: "If you use animind-kit, please cite it as below."
+title: "animind-kit: runtime for scene-spec math explainer videos"
+type: software
+authors:
+  - family-names: "Yu"
+    given-names: "Boxi"
+    alias: "BoxiYu"
+license: MIT
+repository-code: "https://github.com/animind-ai/kit"
