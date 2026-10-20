@@ -102,6 +102,18 @@ uv run animind-kit inspect ../scene-spec/examples/ep22.scene.yaml --no-sheets   
 
 `--audio` 目录里要有每个 beat 的 `<beat>.wav` 和 `<beat>.timing.json`（voice 流水线的输出格式；没有音频的 beat 按每个汉字 0.22 秒估算时长）。`--quality` 取 `l` / `m` / `h`。
 
+### 风格提示（v2）
+
+`style.layout: v2` 的场景，`inspect` / `render` 在同样的采样帧上再看三条写作规则（培玉视觉规范 §10），输出 `HINT` 行，日志末尾汇总一行 `风格提示（§10，只提示）：…`：
+
+| 提示 | 含义 |
+|---|---|
+| `accents` | 同一时刻 ≥ 2 种强调色满亮（不透明度 ≥ 0.9），列出每种颜色属于谁 |
+| `emphasis` | 同一时刻 ≥ 2 个对象带突出装饰（focus / mark / circle / underline） |
+| `undimmed` | 只有一个对象被突出，其它对象仍是满亮的强调色 |
+
+FG / DIM / 底色算安静色。提示**不计入版式问题、不影响退出码、不改画面**；其它模板不检查。实现在 `lint.style_hints()`，测试 `tests/test_style_hints.py`。新集尽量清到 0 条。
+
 ### 字号下限
 
 2026-10-17 定的默认值，按**成片 720p** 的像素写在 `lint.FLOORS_720`（手机上看得清）：
