@@ -4,7 +4,7 @@ on:
     branches: [main]
   pull_request:
 
-# kit 以可编辑路径依赖同级目录的 scene-spec 和 moxian，所以三个仓库并排检出
+# kit 以可编辑路径依赖同级目录的 scene-spec、moxian 和 zh-math-reading（旁白读法，估算书签位置用），所以四个仓库并排检出
 jobs:
   test:
     runs-on: ubuntu-24.04
@@ -23,6 +23,10 @@ jobs:
         with:
           repository: animind-ai/moxian
           path: moxian
+      - uses: actions/checkout@v4
+        with:
+          repository: animind-ai/zh-math-reading
+          path: zh-math-reading
       - name: System deps (CJK font, LaTeX + dvisvgm, ffmpeg, Cairo/Pango for the Manim backend)
         run: |
           sudo apt-get update

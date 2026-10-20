@@ -536,7 +536,7 @@ class MoxianCompiler:
 
         clip 给了（真渲染）就在定格处给旁白插静音、写在 clip 旁边；不给（inspect）只估算时长。
         """
-        bt = timing.load(beat, self.audio_dir)
+        bt = timing.load(beat, self.audio_dir, timing.lang_of(self.doc))
         tl_items: list[tuple[float, Animation]] = []
         snapshots: list[tuple[float, dict[str, Node]]] = [(-1.0, dict(self.visible))]  # 每批动作之后谁在画面上
         ends: list[tuple[float, str]] = []  # (逻辑时刻, 来源)
