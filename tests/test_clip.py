@@ -72,13 +72,27 @@ def compiler_for(spec):
     return MoxianCompiler(doc, T, None, log=lambda *_: None, quality="m", spec_dir=spec.parent)
 
 
+def rgb_array(image):
+    """skia 图像 → RGB 数组。必须显式转成 RGBA：toarray() 默认用平台的原生 32 位格式，
+    Linux 上是 BGRA，不转的话红蓝两个通道会对调（CI 上蓝帧会读成「红」）。"""
+    rgba = image.convert(colorType=skia.kRGBA_8888_ColorType, alphaType=skia.kUnpremul_AlphaType)
+    return np.asarray(rgba.toarray())[:, :, :3].astype(float)
+
+
 def mean_rgb(compiler, t, beat_plan):
     """成片时刻 t（beat 内）的画面平均颜色。"""
     beat_plan.tl.seek(t)
     renderer = SkiaRenderer(160, 90, background=T.BG, camera=compiler.camera)
     renderer.time = t
-    image = np.asarray(renderer.render(compiler.root).toarray())[:, :, :3].astype(float)
-    return image.mean(axis=(0, 1))
+    return rgb_array(renderer.render(compiler.root)).mean(axis=(0, 1))
+
+
+def test_rgb_array_reads_channels_in_rgb_order():
+    # 守住通道顺序：纯红必须读成 (255, 0, 0)，与平台的原生像素格式无关
+    surface = skia.Surface(4, 4)
+    with surface as canvas:
+        canvas.clear(skia.ColorSetARGB(255, 255, 0, 0))
+    assert rgb_array(surface.makeImageSnapshot())[0, 0].tolist() == [255, 0, 0]
 
 
 @needs_ffmpeg
@@ -419,9 +433,7 @@ def frame_mean(video, t, workdir):
     png = workdir / f"f{t:.3f}.png"
     subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(video), "-ss", f"{t:.3f}", "-frames:v", "1", str(png)],
                    check=True)
-    image = skia.Image.open(str(png)).convert(colorType=skia.kRGBA_8888_ColorType,
-                                              alphaType=skia.kUnpremul_AlphaType).toarray()[:, :, :3]
-    return image.reshape(-1, 3).mean(axis=0).astype(float)
+    return rgb_array(skia.Image.open(str(png))).reshape(-1, 3).mean(axis=0)
 
 
 @needs_ffmpeg
