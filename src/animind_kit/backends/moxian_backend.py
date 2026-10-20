@@ -233,6 +233,15 @@ class MoxianCompiler:
                                        floors=self.floors)
         self.allow = lint.Allow.from_doc(doc)
         self.tracker = lint.Tracker()
+        self.hints = lint.Tracker()  # v2 风格提示（§10）：只写日志，不算版式问题
+        t = self.t
+        accents = {}
+        for role, colors in (("A", [t.A, t.ink("A")]), ("B", [t.B, t.ink("B")]), ("C", [t.C, t.ink("C")]),
+                             ("NO", [t.NO, t.ink("NO")]), ("HL", [t.HL, t.HL_INK, t.MARK])):
+            for c in colors:
+                accents[scan._hex(c)] = role
+        quiet = {scan._hex(c) for c in (t.FG, t.DIM, t.DIM_INK or t.DIM, t.BG, t.CARD, t.ink("DIM"), t.ink("FG"))}
+        self.hint_style = lint.Style({k: v for k, v in accents.items() if k and k not in quiet}, quiet)
         self.offset = 0.0  # 当前 beat 在整支片子里的起点（秒）
         self.stats = {"beats": 0, "actions": 0, "cue_late": 0}
         self.seg = segments.SegmentState()  # 残影、常驻（跨 beat）
@@ -651,6 +660,8 @@ class MoxianCompiler:
         things = scan.scan(self.root, self.labels(), self.camera, self.lint_config.min_opacity)
         problems = lint.check(things, self.lint_config, self.allow, self.ignore_pairs, framed=not self.camera.is_identity())
         moment = lint.Moment(beat_id, sample.time, sample.source, self.offset + sample.time)
+        if self.template == "v2":
+            self.hints.see(moment, lint.style_hints(things, self.hint_style))
         return self.tracker.see(moment, problems)
 
     def _report_lint(self) -> None:
@@ -658,6 +669,13 @@ class MoxianCompiler:
         for f in self.tracker.findings:
             self.problems.append(f.line())
             self.log(f"LINT {f.line()}")
+        for f in self.hints.findings:  # 只是提示：不进 problems，不影响退出码
+            self.log(f"HINT {f.line()}")
+        if self.hints.findings:
+            kinds = {}
+            for f in self.hints.findings:
+                kinds[f.problem.kind] = kinds.get(f.problem.kind, 0) + 1
+            self.log("风格提示（§10，只提示）：" + "，".join(f"{k} {n} 条" for k, n in sorted(kinds.items())))
 
     def inspect(self, only: set[str] | None = None, sheets: Path | None = None) -> list[lint.Finding]:
         """不编码视频：逐 beat 编时间线，跳到每个采样点做字形级检查；给了 sheets 就写分镜图。

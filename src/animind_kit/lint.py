@@ -70,6 +70,8 @@ class Thing:
     fill: float = 0.0  # 填充的实际不透明度
     follows: bool = True  # 跟着镜头走（不是钉住的题卡、底部胶囊）
     floor: str | None = None  # 文字：字号下限的类别（FLOORS_720 的键），节点上的 font_floor
+    color: str = ""  # 画出来的颜色（文字、填充取 fill，只描边的取 stroke），小写 #rrggbb
+    alpha: float = 1.0  # 实际不透明度（含各层 opacity）
 
 
 @dataclass
@@ -335,6 +337,59 @@ def check(things: list[Thing], config: Config | None = None, allow: Allow | None
             continue  # 同一处的两份同样的字（变形途中的拷贝）
         out.append(Problem("overlap", a.owner, b.owner, f"文字「{_snippet(a.text)}」和「{_snippet(b.text)}」压在一起",
                            union(x.box for x, _ in glyphs), union(y.box for _, y in glyphs), text=a.text + "|" + b.text))
+    return out
+
+
+# ---------- v2 风格提示：一个镜头一个重点、同一时刻一种强调色（只提示，不算版式问题） ----------
+
+EMPHASIS_ACTS = ("focus", "mark", "circle", "underline")
+
+
+@dataclass
+class Style:
+    """accents：颜色（小写）→ 强调色角色（A/B/C/HL/NO；HL_INK、mark 底色都算 HL）。
+    quiet：墨色、灰（FG、DIM、DIM_INK、BG、CARD）——不算强调，也算"已压暗"。full：不透明度到这么多才算"全强调"。"""
+
+    accents: dict[str, str]
+    quiet: set[str]
+    full: float = 0.9
+
+
+def style_hints(things: list[Thing], cfg: Style) -> list[Problem]:
+    """一个时刻画面上违反 §10 的地方（v2 才查，只当提示）：
+
+    - accents：全不透明的东西里同时用了两种以上强调色；
+    - emphasis：同时有两个以上对象被 focus / mark / circle / underline 着；
+    - undimmed：只强调一个对象时，别的对象里还有全不透明、非墨非灰的东西（没压暗）。
+    """
+    out: list[Problem] = []
+    full = [t for t in things if t.alpha >= cfg.full and t.act != "ghost"]
+    roles: dict[str, list[Thing]] = {}
+    for t in full:
+        role = cfg.accents.get(t.color)
+        if role:
+            roles.setdefault(role, []).append(t)
+    if len(roles) > 1:
+        names = "、".join(sorted(roles))
+        who = "、".join(f"{r}（{'、'.join(sorted({t.owner for t in roles[r]}))}）" for r in sorted(roles))
+        out.append(Problem("accents", "画面", None, f"同时有 {len(roles)} 种强调色：{who}（§10 一种强调色）",
+                           union(t.box for ts in roles.values() for t in ts), text=names))
+    hot: dict[str, list[Thing]] = {}
+    for t in full:
+        if t.act in EMPHASIS_ACTS and t.obj:
+            hot.setdefault(t.obj, []).append(t)
+    if len(hot) > 1:
+        names = "、".join(sorted(hot))
+        out.append(Problem("emphasis", names, None, f"同时强调了 {len(hot)} 个对象（§10 一个镜头一个重点）",
+                           union(t.box for ts in hot.values() for t in ts), text=names))
+    elif len(hot) == 1:
+        (focus,) = hot
+        loud = sorted({t.obj for t in full if t.obj and t.obj != focus and t.act is None
+                       and t.color not in cfg.quiet and t.color})
+        if loud:
+            names = "、".join(loud)
+            out.append(Problem("undimmed", focus, None, f"强调 {focus} 时，{names} 没有压暗（§10 其余压暗）",
+                               union(t.box for t in full if t.obj in loud), text=names))
     return out
 
 
