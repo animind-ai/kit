@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from moxian.core import PX, Group, Node
+from moxian.core import DOWN, PX, Group, Node, arrange
 from moxian.text import Tex, Text, math
 from moxian.text.font import DEFAULT_FONT, FULLWIDTH_PUNCT, is_han, spacing_adjustments, typeface
 from scene_spec.textmarks import ROLES, Span, parse_object_text
@@ -255,19 +255,34 @@ def inline(items: list[Node | Space]) -> Group:
     return row
 
 
+LINE_GAP = 0.22  # 多行文字的行距（字号 30 时，画面单位；按字号缩放）
+
+
 def rich(text: str, theme: Theme, size: float = 30, color: str | None = None) -> Rich:
-    nodes: list[Node | Space] = []
+    """一段带标记的文字。文字里的换行符（YAML 双引号里的 \\n）分行：各行居中、竖排；片段可以跨行。
+    没有换行符时和以前完全一样，排成一行。"""
+    lines: list[list[Node | Space]] = [[]]
     spans: dict[str, Node] = {}
     base_color = color or theme.FG
     for body, span in segments(text):
         role = next((c for c in span.classes if c in ROLES), None) if span else None
         piece_color = theme.ink(role) if role else base_color
         weight = "bold" if span and "bold" in span.classes else "normal"
-        pieces = runs(body, size, piece_color, weight, mono=bool(span and "code" in span.classes))
-        piece_nodes = [p for p in pieces if not isinstance(p, Space)]
+        piece_nodes: list[Node] = []
+        for k, chunk in enumerate(body.split("\n")):
+            if k:
+                lines.append([])
+            if not chunk:
+                continue
+            pieces = runs(chunk, size, piece_color, weight, mono=bool(span and "code" in span.classes))
+            piece_nodes += [p for p in pieces if not isinstance(p, Space)]
+            lines[-1] += pieces
         if span and span.id:
             spans[span.id] = Group(*piece_nodes) if len(piece_nodes) != 1 else piece_nodes[0]
-        nodes += pieces
-    row = inline(nodes)
-    # 片段 Group 只是引用容器，不进树；它的子节点已经在 row 里
-    return Rich(row, spans)
+    if len(lines) == 1:
+        row = inline(lines[0])
+        # 片段 Group 只是引用容器，不进树；它的子节点已经在 row 里
+        return Rich(row, spans)
+    rows = [inline(line) for line in lines if line]
+    arrange(rows, DOWN, gap=LINE_GAP * size / 30)
+    return Rich(Group(*rows), spans)

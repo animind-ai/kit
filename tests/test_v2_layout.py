@@ -75,3 +75,18 @@ def test_v2_widget_min_text():
     data = {"sq": [1, 4, 9]}
     assert DiffTable("tab", table, t, data).smallest_text() == 17
     assert DiffTable("tab", table, t, data, opts={"min_text": 30.0}).smallest_text() == 30.0
+
+
+def test_rich_text_line_breaks():
+    """文字里的换行符分行（v2 英文版侧栏里的长句）；没有换行符时还是一行，片段可以跨行。"""
+    from animind_kit import theme
+    from animind_kit.mx.text import rich
+
+    t = theme.theme("paper")
+    one = rich("[Multiplying always]{#m} makes things bigger?", t, 36)
+    two = rich("[Multiplying always]{#m}\nmakes things bigger?", t, 36)
+    across = rich("[Measure finer and\na fraction fits?]{#m}", t, 36)
+    assert two.node.width < one.node.width * 0.7
+    assert two.node.height > one.node.height * 2
+    assert set(two.spans) == {"m"} and set(across.spans) == {"m"}
+    assert across.spans["m"].bbox() is not None
