@@ -200,6 +200,7 @@ class MoxianCompiler:
         self.lifetimes = analysis.lifetimes(doc)
         # 字号下限（数轴标注、侧栏、练一练框）：按成片算，烧录字幕时画面整体缩小，下限相应抬高
         scale = subtitles.picture_scale(subtitles.mode(doc))
+        self.logo_check = scale == 1.0  # 烧录字幕时 logo 在画面外的字幕带里，不查右下角
         self.floors = lint.floors(scale)
         self.stack_scale: dict[str, float] = {}
         self.pinned_floor: float | None = None
@@ -597,7 +598,7 @@ class MoxianCompiler:
 
     def _end_checks(self, beat_id: str, plan: _Plan) -> None:
         pinned = {k for k, v in self.objects.items() if v.definition.get("pin")} | self.seg.pinned
-        found = layout.check(self.visible, self.ignore_pairs, pinned, self.template)
+        found = layout.check(self.visible, self.ignore_pairs, pinned, self.template, self.logo_check)
         if plan.inner.schedules:  # 参数采样按逻辑时刻，用定格之前的时间线
             found += self._param_layout(plan.inner, plan.snapshots, pinned, {p.split("（")[0] for p in found})
         for problem in found:
@@ -684,7 +685,7 @@ class MoxianCompiler:
             for p in final:
                 p.set(tl.param_at(p, t))
             values = "，".join(f"{p.name}={p.value:.3g}" for p in final)
-            for problem in layout.check(visible, self.ignore_pairs, pinned, self.template):
+            for problem in layout.check(visible, self.ignore_pairs, pinned, self.template, self.logo_check):
                 key = problem.split("（")[0]
                 if key not in seen:
                     seen.add(key)

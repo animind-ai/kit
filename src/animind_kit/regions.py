@@ -46,8 +46,8 @@ TEMPLATES = {
     "v2": {"top": 1.0, "side": 0.0},
 }
 # 右下角 logo 位（brand/peiyu/wrap.py 叠的角标，720p 下 x 1204–1258、y 644–698 ≈ 0.6×0.6 单位，离边 0.24）。
-# 烧录字幕时画面缩小、角标落在画面外的字幕带右端；soft / none 时角标压在画面上。v2 一律不许对象伸进这个角：
-# 对象包围盒 x1 > x、y0 < y 即报（坐标是渲染画面单位）。
+# 烧录字幕时画面缩小、角标落在画面外的字幕带右端，碰不到画面里的对象，不用查；soft / none 时角标压在画面上，
+# v2 不许对象伸进这个角：对象包围盒 x1 > x、y0 < y 即报（坐标是渲染画面单位；check_boxes 的 logo=False 时不查）。
 LOGO_CORNER = {"v2": (6.2, -3.1)}
 
 
@@ -81,13 +81,13 @@ def regions(top_used: bool = True, side_used: bool = True, footer_used: bool = T
 
 
 def check_boxes(boxes: dict[str, tuple[float, float, float, float]], ignore_pairs: set[frozenset[str]],
-                pinned: set[str] = frozenset(), template: str = "default") -> list[str]:
-    """boxes: 名字 → (x0, x1, y0, y1)。返回出框 / 重叠的描述。"""
+                pinned: set[str] = frozenset(), template: str = "default", logo: bool = True) -> list[str]:
+    """boxes: 名字 → (x0, x1, y0, y1)。返回出框 / 重叠的描述。logo：查不查右下角 logo 位（烧录字幕时画面缩小，不用查）。"""
     from itertools import combinations
 
     problems = []
     w, h = FRAME_WIDTH / 2 - MARGIN + 0.05, FRAME_HEIGHT / 2 - MARGIN + 0.05
-    corner = LOGO_CORNER.get(template)
+    corner = LOGO_CORNER.get(template) if logo else None
     for name, (x0, x1, y0, y1) in boxes.items():
         top = FRAME_HEIGHT / 2 - 0.1 if name in pinned else h
         if x0 < -w or x1 > w or y0 < -h or y1 > top:

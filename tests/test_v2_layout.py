@@ -35,5 +35,7 @@ def test_v2_logo_corner_checked():
     assert any("logo" in p for p in R.check_boxes(box, set(), template="v2"))
     assert not any("logo" in p for p in R.check_boxes(box, set(), template="default"))
     assert not R.check_boxes({"y": (5.0, 6.0, -3.6, -3.2)}, set(), template="v2")
+    # 烧录字幕时 logo 在画面外，不查
+    assert not R.check_boxes(box, set(), template="v2", logo=False)
     # 字幕带不在版式里：压到原来一行字幕条的位置不再算出界
     assert not R.check_boxes({"z": (-3.0, 3.0, -3.65, -3.0)}, set(), template="v2")
