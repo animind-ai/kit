@@ -306,7 +306,7 @@ class MoxianCompiler:
         placed: dict[str, Node] = {}
         for child in d["children"]:
             if child in self.objects:
-                raise ValueError(f"{obj_id}：成员 {child} 已经在别的 group 里（或 group 嵌套成环）")
+                raise ValueError(f"{obj_id}：成员 {child} 重复出现、已经在别的 group 里，或 group 嵌套成环（scene-spec check 报 SS344）")
             built = self.build_object(child, self.doc["objects"][child])
             self.objects[child] = built
             node = built.node
@@ -1074,8 +1074,9 @@ class MoxianCompiler:
         """from 变成 to。
 
         - 默认（不写 match、match: shape）：TransformCopy，目标的每个字形从源里对应的字形变过来，源保持不动。
-        - match: tex，或 auto 且两边是有同名片段的整个对象：TransformMatching，同名片段平移 + 缩放过去，其余淡入淡出。
-        - replace（match: tex / auto 时默认是）：源在变形期间淡出、之后不在画面上（等于同时 hide 它）。
+        - match: tex / auto 且两边是有同名片段的整个对象：TransformMatching，同名片段平移 + 缩放过去，新片段淡入；
+          配不上时退回上面的整体变形。match 只管配对，源默认保持不动（配上的片段像复制一样飞过去）。
+        - 只有显式写了 replace: true：源在变形期间淡出、之后不在画面上（等于同时 hide 它）。
         都不做中途采样：部件互相穿过是变形本来的样子。
         """
         d = DEFAULT_DUR["transform"]

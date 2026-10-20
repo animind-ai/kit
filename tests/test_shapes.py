@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from moxian.anim import Fade, TransformCopy, TransformMatching
 from moxian.core import PathNode
-from scene_spec import check_file
+from scene_spec import check, check_file
 
 from animind_kit import analysis, theme
 from animind_kit.backends.moxian_backend import MoxianCompiler
@@ -138,8 +138,8 @@ def opacity(c: MoxianCompiler, node) -> float:
     return next(s.opacity for n, _m, s in c.root.walk() if n is node)
 
 
-def test_match_tex_moves_common_spans_and_fades_in_new_ones():
-    doc = eq_doc({"match": "tex"})
+def test_match_tex_with_replace_moves_common_spans_and_fades_in_new_ones():
+    doc = eq_doc({"match": "tex", "replace": True})
     c = compiler(doc)
     play(c, doc["beats"][0])
     plan = c._plan(doc["beats"][1])
@@ -172,16 +172,38 @@ def test_match_tex_moves_common_spans_and_fades_in_new_ones():
     assert scanned(c) == {"e2"}
 
 
-def test_match_tex_with_replace_false_keeps_the_source():
-    doc = eq_doc({"match": "tex", "replace": False})
+@pytest.mark.parametrize("action", [{"match": "tex"}, {"match": "auto"}, {"match": "tex", "replace": False}])
+def test_match_without_replace_keeps_the_source(action):
+    # match 只管配对：不写 replace: true，配上的片段像复制一样飞过去，源原样留着
+    doc = eq_doc(action)
+    c = compiler(doc)
+    play(c, doc["beats"][0])
+    plan = c._plan(doc["beats"][1])
+    [anim] = plan.inner.items[0].anim.anims
+    assert isinstance(anim, TransformMatching) and anim.keep_source
+    plan.tl.seek(plan.until)
+    assert opacity(c, c.objects["e1"].node) == 1.0
+    assert set(c.visible) == {"e1", "e2"} and scanned(c) == {"e1", "e2"}
+    assert analysis.lifetimes({**doc, "beats": doc["beats"] + [{"id": "C", "do": []}]})["e1"] == {0, 1, 2}
+
+
+@pytest.mark.parametrize("replace, visible", [(None, {"e1", "e2"}), (False, {"e1", "e2"}), (True, {"e2"})])
+def test_match_tex_without_common_spans_falls_back_and_keeps_source_unless_replace(replace, visible):
+    doc = eq_doc({"match": "tex"} if replace is None else {"match": "tex", "replace": replace})
+    doc["objects"]["e2"]["text"] = "[$y$]{#p} $=1$"  # 没有同名片段：退回整体变形
+    c = compiler(doc)
+    play(c, doc["beats"][0])
+    anims, _d = c.animations(doc["beats"][1]["do"][0])
+    assert isinstance(anims[0], TransformCopy)
+    assert any(isinstance(a, Fade) and a.node is c.objects["e1"].node for a in anims) == (replace is True)
     c = compiler(doc)
     play(c, doc["beats"][0])
     play(c, doc["beats"][1])
-    assert set(c.visible) == {"e1", "e2"} and scanned(c) == {"e1", "e2"}
+    assert set(c.visible) == visible and scanned(c) == visible
 
 
 def test_changed_span_content_crossfades_and_auto_without_spans_falls_back():
-    doc = eq_doc({"match": "auto"})
+    doc = eq_doc({"match": "auto", "replace": True})
     doc["objects"]["e2"]["text"] = "[$x^2$]{#a} $+$ [$3x$]{#b}"
     c = compiler(doc)
     play(c, doc["beats"][0])
@@ -198,7 +220,7 @@ def test_changed_span_content_crossfades_and_auto_without_spans_falls_back():
     anims, _d = c.animations({"act": "show", "target": "m1"})
     anims, _d = c.animations(doc["beats"][0]["do"][1])
     assert isinstance(anims[0], TransformCopy)  # 没有片段：整体变形
-    assert any(isinstance(a, Fade) and a.node is c.objects["m1"].node for a in anims)  # auto 默认替换源
+    assert not any(isinstance(a, Fade) and a.node is c.objects["m1"].node for a in anims)  # 没写 replace：源保持不动
 
 
 # ---------- transform: replace / 默认 ----------
@@ -248,7 +270,12 @@ def test_replace_changes_the_beat_cache_key():
     assert keys[0] != keys[1]
 
 
-@pytest.mark.parametrize("bad", [{"g": {"type": "group", "children": ["c", "c"]}}])
+@pytest.mark.parametrize("bad", [{"g": {"type": "group", "children": ["c", "c"]}},
+                                 {"g": {"type": "group", "children": ["c"]}, "h": {"type": "group", "children": ["c"]}}])
 def test_member_in_two_places_is_rejected(bad):
-    with pytest.raises(ValueError):
-        compiler({**META, "objects": {**SHAPES, **bad}, "beats": []})
+    # scene-spec check 先拦下（SS344），render 不会走到构建；直接构建也只抛明确的错误，不会崩在别处
+    doc = {**META, "meta": {**META["meta"], "author": "t", "license": "CC-BY-4.0"}, "objects": {**SHAPES, **bad},
+           "beats": [{"id": "B", "do": [{"at": 0, "act": "show", "target": "g"}]}]}
+    assert "SS344" in [i.code for i in check(doc).issues]
+    with pytest.raises(ValueError, match="SS344"):
+        compiler(doc)

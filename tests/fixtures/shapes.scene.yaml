@@ -115,7 +115,7 @@ beats:
       - {with: prev, act: hide, target: more}
       - {with: prev, act: hide, target: title}
       - {at: s1, act: show, target: e1}
-      - {at: s2, act: transform, from: e1, to: e2, match: tex}
+      - {at: s2, act: transform, from: e1, to: e2, match: tex, replace: true}
 
   - id: Fold
     say:
