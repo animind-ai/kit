@@ -23,7 +23,7 @@
 - **天平** `mx/balance.py`（`balance`）：两个托盘放砝码和一个未知盒子，按重量自动倾斜；`remove` / `add` 一边或两边拿走、放上砝码，
   `label` 换盒子上的字，解方程"两边同时减"用。示例 `scene-spec/examples/ep19.scene.yaml`。
 - **立体** `mx/solid.py`（`solid`）：正方体、长方体、四棱锥、圆柱、圆锥的轴测图（淡色面、看不见的棱画虚线）；正方体剖成三个全等的四棱锥 `split` / `apart` / `join` / `unsplit`；
-  截平面 `sweep` 扫过几个立体、`compare` 把截面平铺到旁边比大小（祖暅原理）；`set {role}` 换面和棱的颜色。示例 `scene-spec/examples/solids.scene.yaml`。
+  截平面 `sweep` 扫过几个立体、`compare` 把截面平铺到旁边比大小（祖暅原理）；`orbit` 连续转动视角（每帧重算朝前的面、虚实棱、远近顺序，排版按 orbit 经过的视角留位置）；`set {role}` 换面和棱的颜色。示例 `scene-spec/examples/solids.scene.yaml`。
 - **剖分** `mx/dissect.py`（`dissect`）：多边形、圆、扇形、点阵按直线 / 折线 / 扇形切开，块可以 `cut`、`shift`、`rotate`、`flip`、`snap`（边对边吸附）、`copy`、`merge`（拼合外轮廓）、`arrange`（扇形交错排开），
   几何和检查都来自 `scene_spec.dissect`。`fold {cut, flap, back?}`：沿一刀 `line` 切法的切线把 `flap` 那几块翻到另一侧（没切过就先切）——
   翻的那侧在垂直于折痕的方向从 1 压到 −1，中途变暗，`back` 是翻过来露出的背面颜色，落下后放在最上层；折纸、轴对称、角平分线用。
@@ -43,7 +43,7 @@
 
 分段播放（`step` 子步定格、`ghost` 残影、`pin` 常驻，见 scene-spec 设计稿 §7.6）、字幕导出的定格顺延只有墨线后端实现；Manim 后端只导出字幕和章节。
 
-还没有：自动布局求解（现在只按约束摆放 + 检查）、三维（`solid` 是固定视角的轴测图，不能转视角）、camera 动作、area_model 等洞察系列的原语、Whisper 词级时间戳（书签时刻按字符位置估算）。
+还没有：自动布局求解（现在只按约束摆放 + 检查）、三维（`solid` 是正交轴测图，`orbit` 只转相机，没有透视）、camera 动作、area_model 等洞察系列的原语、Whisper 词级时间戳（书签时刻按字符位置估算）。
 
 ## 用法
 

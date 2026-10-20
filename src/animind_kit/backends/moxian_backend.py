@@ -273,8 +273,9 @@ class MoxianCompiler:
             cls = widgets.lookup(definition["widget"])
             if cls is None:
                 raise NotImplementedError(f"kit（墨线）还没有组件 {definition['widget']!r}（对象 {obj_id}）")
+            plan = getattr(cls, "plan_opts", None)  # 组件要先看一眼整篇文档才能排版的（solid 的 orbit 会经过哪些视角）
             opts = {**({"min_size": self.min_size("practice")} if definition["widget"] == "think_box" else {}),
-                    **(opts or {})}
+                    **(plan(self.doc, obj_id) if plan else {}), **(opts or {})}
             w = cls(obj_id, definition, t, self.data, self.params, opts=opts)
             return Built(w.node, definition, w, w.built.spans, w.built.parts, w.built.items)
         kind = definition["type"]

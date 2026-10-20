@@ -1,0 +1,79 @@
+# 立体组件 solid 的 orbit：正方体剖成三个四棱锥（cube_pyramids）和截面比大小（section）两组画面，相机在 beat 里连续转动。
+# kit 的测试用：scene-spec check、animind-kit inspect、animind-kit render 都要干净地通过；转过之后的视角留到后面的 beat。
+spec: "0.1"
+
+meta:
+  id: solid-orbit
+  title: 立体：转着看
+  line: worked
+  units: [P6]
+  author: Boxi Yu
+  license: CC-BY-4.0
+  sources:
+    - kind: other
+      cite: 原创
+
+pedagogy:
+  insight: 换个角度看，被挡住的棱和截面都看得清
+  status: method
+  landing: Section
+
+style:
+  theme: paper
+  canvas: "16:9"
+  voice:
+    persona: teacher-hs
+    speed: 1.0
+  subtitles: none
+
+objects:
+  cube:
+    widget: solid
+    in: stage
+    bodies:
+      C: {cube: 2, role: DIM, label: 正方体}
+    splits:
+      s: {body: C, into: [P1, P2, P3], gap: 1.5}
+  zu:
+    widget: solid
+    in: stage
+    bodies:
+      P: {pyramid: {base: 2, h: 2}, role: B}
+      K: {cone: {r: 1.128, h: 2}, role: A}
+    plane: {bodies: [P, K], z: 0.5, compare: right, labels: ['$S_1$', '$S_2$']}
+
+beats:
+  - id: Turn
+    say:
+      - {id: s1, pace: normal, text: "一个正方体，{@o}转过来看看。", en: "A cube. Turn it around."}
+    do:
+      - {at: s1, act: show, target: cube}
+      - {at: s1@o, act: orbit, target: cube, args: {azimuth: 65, elevation: 28}}
+
+  - id: Split
+    say:
+      - {id: s1, pace: normal, text: "{@c}切成三块，{@a}分开。", en: "Cut into three pieces, pull them apart."}
+      - {id: s2, pace: normal, text: "{@u}从下面看，{@j}再合起来。", en: "Look from below, then put them back."}
+    do:
+      - {at: s1@c, act: split, target: cube, args: {split: s}}
+      - {at: s1@a, act: apart, target: cube, args: {split: s}}
+      - {at: s2@u, act: orbit, target: cube, args: {d_azimuth: 150, elevation: -25}}
+      - {at: s2@j, act: join, target: cube, args: {split: s}}
+
+  - id: Section
+    shows: landing
+    say:
+      - {id: s1, pace: normal, text: "{@p}一个四棱锥，一个圆锥，{@z}横着切一刀。", en: "A pyramid and a cone, sliced across."}
+      - {id: s2, pace: normal, text: "{@o}换个角度，{@c}把截面拿出来比。", en: "From another angle, take the sections out to compare."}
+    do:
+      - {at: s1, act: hide, target: cube}
+      - {after: prev, act: show, target: zu}
+      - {at: s1@z, act: sweep, target: zu, args: {z: 0.5}}
+      - {at: s2@o, act: orbit, target: zu, args: {azimuth: 70, elevation: 35}}
+      - {at: s2@c, act: compare, target: zu}
+
+  - id: Later
+    say:
+      - {id: s1, pace: normal, text: "{@u}平面往上走，两个截面还是一样大。", en: "Move the plane up: the sections still match."}
+    do:
+      - {at: s1@u, act: sweep, target: zu, args: {z: 1.5}}
