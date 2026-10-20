@@ -50,8 +50,8 @@ def scan(root: Node, labels: dict[int, Label], camera: Camera | None = None, min
     runs: dict[int, int] = {}
 
     def visit(node: Node, parent: np.ndarray, parent_style: Style | None, label: Label | None,
-              run: tuple[Node, np.ndarray] | None, fixed: bool, anchor: np.ndarray | None,
-              floor: str | None = None) -> None:
+              run: tuple[Node, np.ndarray, tuple] | None, fixed: bool, anchor: np.ndarray | None,
+              floor: str | None = None, trail: tuple = ()) -> None:
         m = parent @ node.matrix
         floor = getattr(node, "font_floor", None) or floor
         if node.style is None:
@@ -62,7 +62,8 @@ def scan(root: Node, labels: dict[int, Label], camera: Camera | None = None, min
             style = node.style.with_(opacity=node.style.opacity * parent_style.opacity)
         if style.opacity < min_opacity:
             return
-        label = labels.get(id(node), label)
+        if id(node) in labels:  # 文字段的位置从挂名字的节点算起
+            label, trail = labels[id(node)], ()
         fixed = fixed or node.fixed
         if anchor is None and node.keep_size:
             anchor = m[:2, 2].copy()
@@ -73,7 +74,7 @@ def scan(root: Node, labels: dict[int, Label], camera: Camera | None = None, min
         else:
             screen = cam.matrix @ m
         if isinstance(node, (Text, Tex)) and run is None:
-            run = (node, screen)
+            run = (node, screen, trail)
         path = getattr(node, "path", None)
         if path is not None and not path.is_empty() and style.visible() and label is not None:
             fill = style.fill_opacity * style.opacity if style.fill is not None else 0.0
@@ -86,20 +87,21 @@ def scan(root: Node, labels: dict[int, Label], camera: Camera | None = None, min
                     key = id(run[0]) if run is not None else id(label)
                     em = None
                     text = label.owner
+                    slot = None
                     if run is not None and not ghost:
-                        rnode, rm = run
+                        rnode, rm, slot = run
                         em = float(rnode.size * np.sqrt(abs(np.linalg.det(rm[:2, :2]))))
                         text = getattr(rnode, "source", None) or getattr(rnode, "text", "") or ""
                         text = text.replace("\\displaystyle ", "")
                     things.append(Thing("text", label.owner, label.obj, tuple(b), 0, runs.setdefault(key, len(runs)),
-                                        text, em, label.act, follows=not fixed, floor=floor))
+                                        text, em, label.act, follows=not fixed, floor=floor, slot=slot))
                 else:
                     curves, closed = flatten(path, screen)
                     things.append(Thing("shape", label.owner, label.obj, tuple(b), 0, act=label.act,
                                         curves=curves, closed=closed, stroked=stroked, fill=fill, follows=not fixed))
                 fixed_flags.append(fixed)
-        for child in sorted(node.children, key=lambda n: n.z):
-            visit(child, m, style, label, run, fixed, anchor, floor)
+        for k, child in sorted(enumerate(node.children), key=lambda kc: kc[1].z):
+            visit(child, m, style, label, run, fixed, anchor, floor, trail + (k,))
 
     visit(root, T.identity(), None, None, None, False, None)
     # 绘制顺序：和 SkiaRenderer 一致，镜头生效时不跟镜头走的一层最后画

@@ -190,7 +190,9 @@ def inspect(spec: Path, audio_dir: Path | None, out_dir: Path | None, beats: lis
     theme = load_theme(doc.get("style", {}).get("theme", "paper"))
     compiler = MoxianCompiler(doc, theme, audio_dir, log, quality)
     compiler.inspect(set(beats) if beats else None, out_dir)
-    log(f"inspect {spec.name}：版式问题 {len(compiler.problems)} 条" + (f"，分镜图在 {out_dir}" if out_dir else ""))
+    log(f"inspect {spec.name}：版式问题 {len(compiler.problems)} 条"
+        + (f"，中途提醒 {len(compiler.warnings)} 条" if compiler.warnings else "")
+        + (f"，分镜图在 {out_dir}" if out_dir else ""))
     return compiler.problems
 
 

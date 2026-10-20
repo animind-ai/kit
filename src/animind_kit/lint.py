@@ -70,6 +70,7 @@ class Thing:
     fill: float = 0.0  # 填充的实际不透明度
     follows: bool = True  # 跟着镜头走（不是钉住的题卡、底部胶囊）
     floor: str | None = None  # 文字：字号下限的类别（FLOORS_720 的键），节点上的 font_floor
+    slot: tuple | None = None  # 文字：文字段在所属节点下的位置（子节点下标路径），文字内容变了也不变（读数）
 
 
 @dataclass
@@ -81,9 +82,14 @@ class Problem:
     box: Box  # 在分镜图上圈出的范围
     other_box: Box | None = None
     text: str = ""
+    slot: tuple | None = None  # 涉及的文字段的位置（Thing.slot；overlap 是两段的）；不知道时为 None
 
     def key(self) -> tuple:
         return (self.kind, self.subject, self.other, self.text)
+
+    def ident(self) -> tuple:
+        """按文字段的位置认问题，不按文字内容：读数在变时，同一段字的同一个问题还是同一个。不知道位置时退回 key()。"""
+        return (self.kind, self.subject, self.other, self.text if self.slot is None else self.slot)
 
 
 @dataclass
@@ -99,6 +105,7 @@ class Finding:
     number: int
     problem: Problem
     moments: list[Moment] = field(default_factory=list)
+    prefix: str = ""  # 编号前缀：中途采样的问题另编一套号（"mid"），不和分镜图上的编号混
 
     def line(self) -> str:
         p, first, last = self.problem, self.moments[0], self.moments[-1]
@@ -111,7 +118,7 @@ class Finding:
         if first.absolute is not None:
             when += f"（片中 {first.absolute:.1f}s）"
         who = p.subject if p.other is None else f"{p.subject} × {p.other}"
-        return f"[{self.number}] {first.beat} {when} {first.source}  {p.kind}  {who}：{p.detail}"
+        return f"[{self.prefix}{self.number}] {first.beat} {when} {first.source}  {p.kind}  {who}：{p.detail}"
 
 
 # ---------- 几何 ----------
@@ -244,7 +251,7 @@ def check(things: list[Thing], config: Config | None = None, allow: Allow | None
         kind = f"（{g.floor} 下限）" if g.floor and limit > cfg.min_font else ""
         out.append(Problem("small", g.owner, None,
                            f"文字「{_snippet(g.text)}」字号 {g.em:.1f}px（1080p），低于 {limit:.4g}px{kind}",
-                           union(t.box for t in glyphs), text=g.text))
+                           union(t.box for t in glyphs), text=g.text, slot=g.slot))
 
     # clip：按所属对象合并
     tol = cfg.clip * PX
@@ -310,7 +317,7 @@ def check(things: list[Thing], config: Config | None = None, allow: Allow | None
             detail = f"{shape} 的{what}穿过文字「{_snippet(g.text)}」"
         else:
             detail = f"{shape} 的填充盖在文字「{_snippet(g.text)}」上"
-        out.append(Problem(kind, owner, shape, detail, union(t.box for t in glyphs), sbox, text=g.text))
+        out.append(Problem(kind, owner, shape, detail, union(t.box for t in glyphs), sbox, text=g.text, slot=g.slot))
 
     # overlap：不同文字段的字形互相压住
     pairs: dict[tuple[int, int], list[tuple[Thing, Thing]]] = {}
@@ -334,7 +341,8 @@ def check(things: list[Thing], config: Config | None = None, allow: Allow | None
         if max(abs(u - v) for u, v in zip(union(x.box for x, _ in glyphs), union(y.box for _, y in glyphs))) < PX:
             continue  # 同一处的两份同样的字（变形途中的拷贝）
         out.append(Problem("overlap", a.owner, b.owner, f"文字「{_snippet(a.text)}」和「{_snippet(b.text)}」压在一起",
-                           union(x.box for x, _ in glyphs), union(y.box for _, y in glyphs), text=a.text + "|" + b.text))
+                           union(x.box for x, _ in glyphs), union(y.box for _, y in glyphs), text=a.text + "|" + b.text,
+                           slot=None if a.slot is None or b.slot is None else (a.slot, b.slot)))
     return out
 
 
@@ -350,16 +358,18 @@ class Tracker:
     """整支片子各个时刻的问题：同一个问题（同类、同样的对象和文字）只记一条，带上它出现的所有时刻
     （可能跨好几个 beat，例如一直在画面上的图）；按首次出现编号。"""
 
-    def __init__(self) -> None:
+    def __init__(self, prefix: str = "", by_slot: bool = False) -> None:
         self.found: dict[tuple, Finding] = {}
+        self.prefix = prefix
+        self.by_slot = by_slot  # True：按 Problem.ident() 合并（文字段的位置），否则按 key()（文字内容）
 
     def see(self, moment: Moment, problems: list[Problem]) -> list[tuple[int, Problem]]:
         out = []
         for p in problems:
-            key = p.key()
+            key = p.ident() if self.by_slot else p.key()
             f = self.found.get(key)
             if f is None:
-                f = self.found[key] = Finding(len(self.found) + 1, p)
+                f = self.found[key] = Finding(len(self.found) + 1, p, prefix=self.prefix)
             f.moments.append(moment)
             out.append((f.number, p))
         return out

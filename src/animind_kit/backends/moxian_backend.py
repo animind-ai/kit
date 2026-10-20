@@ -61,6 +61,13 @@ WIDGET_DUR = 0.5
 LEVELS = {"display": 1.5, "title": 1.25, "body": 1.0, "caption": 0.75}  # scene-spec 的 level → 字号倍数
 CUE_LATE = 0.4
 SIZES = {"l": (854, 480, 15), "m": (1280, 720, 30), "h": (1920, 1080, 30)}
+# 中途采样（标了 sample_alphas 的连续动画播到一半之类的时刻）的问题怎么算：
+# - clip（字伸出画面）、overlap（字压字）：错误，和结束帧的问题一样计入版式问题；
+# - cross（线扫过字）：只提醒，不计入版式问题（割线转向、平面旋转时线从字上扫过去是常事）；
+# - small、covered：不查。字号由排版决定、中途不会变小（镜头推近只会放大）；填充盖住字和线扫过字一样
+#   是一闪而过的，报成提醒只会更吵。真停在那里的话结束帧会照常报错。
+MID_ERRORS = ("clip", "overlap")
+MID_WARNINGS = ("cross",)
 
 
 @dataclass
@@ -134,7 +141,9 @@ class _FollowTimeline(Timeline):
 @dataclass
 class _Sample:
     time: float  # beat 内的成片时刻
-    source: str  # 这一刻是哪个动作刚做完：do[i] 动作 at=书签
+    source: str  # 这一刻是哪个动作刚做完：do[i] 动作 at=书签；中途采样时是正在播的动作
+    mid: float | None = None  # 中途采样：那个动画播到的比例（时长的比例）；None 是动作结束 / beat 末尾
+    objs: frozenset[str] | None = None  # 中途采样：正在连续变化的对象；只报牵涉到它们的问题（None：不限）
 
 
 @dataclass
@@ -213,6 +222,10 @@ class MoxianCompiler:
                                        floors=self.floors)
         self.allow = lint.Allow.from_doc(doc)
         self.tracker = lint.Tracker()
+        self.mid_tracker = lint.Tracker("mid", by_slot=True)  # 中途采样发现的问题（结束帧没有的），另编号
+        self.rest_seen: set[tuple] = set()  # (beat, Problem.ident())：结束帧上见过的问题，中途的不再重复报
+        self.mid_pending: list[tuple[lint.Moment, list[lint.Problem]]] = []  # 当前 beat 的，beat 播完再定
+        self.warnings: list[str] = []  # 只提醒、不计入版式问题的（中途的 cross）
         self.offset = 0.0  # 当前 beat 在整支片子里的起点（秒）
         self.stats = {"beats": 0, "actions": 0, "cue_late": 0}
         self.seg = segments.SegmentState()  # 残影、常驻（跨 beat）
@@ -481,6 +494,7 @@ class MoxianCompiler:
         tl_items: list[tuple[float, Animation]] = []
         snapshots: list[tuple[float, dict[str, Node]]] = [(-1.0, dict(self.visible))]  # 每批动作之后谁在画面上
         ends: list[tuple[float, str]] = []  # (逻辑时刻, 来源)
+        marked: dict[int, tuple[frozenset[str] | None, str]] = {}  # 标了中途采样的动画 → (它在变的对象, 来源)
         prev_end = 0.0
         actions = beat.get("do", [])
         i = 0
@@ -503,7 +517,9 @@ class MoxianCompiler:
             anims: list[Animation] = []
             run_time = 0.0
             before = set(self.visible)
-            for action in batch:
+            cue = f" at={head['at']}" if "at" in head else ""
+            source = f"do[{i}] {head['act']}{cue}"
+            for n, action in enumerate(batch):
                 self.stats["actions"] += 1
                 if action["act"] == "step":
                     ref = str(action.get("at", "after" if "after" in action else "with"))
@@ -515,6 +531,8 @@ class MoxianCompiler:
                     d = float(action["dur"])
                 for anim in a:
                     anim.duration = d
+                    for sub in _marked(anim):  # 中途采样的来源写这个动作自己（同一批 with 进来的也分得清）
+                        marked[id(sub)] = (self._moving_objects(action), f"do[{i + n}] {action['act']}{cue}")
                 anims += a
                 run_time = max(run_time, d)
             self._solve_layout(beat["id"], set(self.visible) - before)
@@ -524,7 +542,6 @@ class MoxianCompiler:
             anims.sort(key=lambda a: not isinstance(a, (_Overlay, segments.GhostIn)))
             if anims:
                 tl_items.append((start, together(*anims)))
-            source = f"do[{i}] {head['act']}" + (f" at={head['at']}" if "at" in head else "")
             ends.append((start + run_time, source))
             prev_end = start + run_time
             i = j
@@ -559,18 +576,55 @@ class MoxianCompiler:
         until = max(spoken + hold, tl.end + 0.3, 1.0)
         # 采样落在渲染真正会画的那一帧（不早于动作结束的第一帧），inspect 和 render 看到的是同一个画面
         last = round(until * self.fps) / self.fps
-        samples = [_Sample(min(np.ceil(segments.to_video(t, tl.freezes) * self.fps - 1e-6) / self.fps, last), src)
-                   for t, src in ends]
+
+        def frame(t: float) -> float:
+            return min(np.ceil(segments.to_video(t, tl.freezes) * self.fps - 1e-6) / self.fps, last)
+
+        samples = [_Sample(frame(t), src) for t, src in ends]
         samples.append(_Sample(last, "结束"))
+        samples += self._mid_samples(inner, marked, frame, {s.time for s in samples})
         return _Plan(inner, tl, narration, until, snapshots, sorted(samples, key=lambda s: s.time))
+
+    def _mid_samples(self, inner: Timeline, marked: dict[int, tuple[frozenset[str] | None, str]],
+                     frame: Callable[[float], float], rest: set[float]) -> list[_Sample]:
+        """标了 sample_alphas 的动画的中途采样点，落到渲染会画的帧上。和结束帧同一帧的不要（结束帧照常查）；
+        几个落在同一帧的合成一个：来源全部列出，正在变的对象取并集。没有对象在变（补间的参数没人用）就不采样。"""
+        groups: dict[float, list[tuple[float, str, frozenset[str] | None]]] = {}
+        for ms in inner.samples():
+            time = frame(ms.time)
+            if time in rest:
+                continue
+            for alpha, anim in ms.sources:
+                moving, src = marked.get(id(anim), (None, "?"))
+                groups.setdefault(time, []).append((alpha, src, moving))
+        out = []
+        for time, entries in groups.items():
+            moving = [m for _a, _s, m in entries]
+            objs = None if None in moving else frozenset().union(*moving)
+            if objs is not None and not objs:
+                continue
+            source = " + ".join(dict.fromkeys(f"α={a:g} {s}" for a, s, _m in entries))
+            out.append(_Sample(time, f"mid {source}", entries[0][0], objs))
+        return out
+
+    def _moving_objects(self, action: dict) -> frozenset[str] | None:
+        """一个动作里连续变化的是哪些对象：tween 是依赖这些参数的对象（读数、跟着参数走的图），其余是 target。"""
+        if action["act"] == "tween":
+            deps = {id(d if isinstance(d, Node) else getattr(d, "node", d))
+                    for k in action.get("args", {}) for d in self.params[k]._dependents}
+            return frozenset(k for k, b in self.objects.items() if any(id(n) in deps for n in _subtree(b.node)))
+        if "target" in action:
+            return frozenset({selectors.parse(action["target"]).obj})
+        return None
 
     def render_beat(self, beat: dict, clip: Path) -> float:
         plan = self._plan(beat, clip)
         audio = self._padded_audio(plan.narration, plan.until, clip)
         self._camera_exempt()
         renderer = SkiaRenderer(self.width, self.height, background=self.t.BG, camera=self.camera)
-        sampled = _Sampling(plan.tl, plan.samples, lambda s: self.lint_at(beat["id"], s))
+        sampled = _Sampling(plan.tl, plan.samples, lambda s: self.check_at(beat["id"], s))
         render_video(self.root, sampled, clip, renderer, fps=self.fps, audio=audio, until=plan.until, log=lambda *_: None)
+        self._settle_mid(beat["id"])
         self.stats["beats"] += 1
         self._end_checks(beat["id"], plan)
         return plan.until
@@ -609,22 +663,65 @@ class MoxianCompiler:
                 out[id(holder)] = scan.Label(name, obj, "ghost")
         return out
 
+    def check_at(self, beat_id: str, sample: _Sample) -> None:
+        if sample.mid is None:
+            self.lint_at(beat_id, sample)
+        else:
+            self.mid_lint_at(beat_id, sample)
+
+    def _lint_now(self, labels: dict[int, scan.Label]) -> list[lint.Problem]:
+        things = scan.scan(self.root, labels, self.camera, self.lint_config.min_opacity)
+        return lint.check(things, self.lint_config, self.allow, self.ignore_pairs, framed=not self.camera.is_identity())
+
     def lint_at(self, beat_id: str, sample: _Sample) -> list[tuple[int, lint.Problem]]:
-        things = scan.scan(self.root, self.labels(), self.camera, self.lint_config.min_opacity)
-        problems = lint.check(things, self.lint_config, self.allow, self.ignore_pairs, framed=not self.camera.is_identity())
+        problems = self._lint_now(self.labels())
         moment = lint.Moment(beat_id, sample.time, sample.source, self.offset + sample.time)
+        self.rest_seen |= {(beat_id, p.ident()) for p in problems}
         return self.tracker.see(moment, problems)
 
+    def mid_lint_at(self, beat_id: str, sample: _Sample) -> None:
+        """中途采样：只看 MID_ERRORS / MID_WARNINGS 里的几类、只看牵涉到正在变的对象的问题，先记下，beat 播完再定。"""
+        labels = self.labels()
+        problems = [p for p in self._lint_now(labels) if p.kind in MID_ERRORS + MID_WARNINGS]
+        if sample.objs is not None:
+            obj_of = {lab.owner: lab.obj for lab in labels.values()}
+            problems = [p for p in problems if obj_of.get(p.subject) in sample.objs
+                        or (p.other is not None and obj_of.get(p.other) in sample.objs)]
+        if problems:
+            self.mid_pending.append((lint.Moment(beat_id, sample.time, sample.source, self.offset + sample.time), problems))
+
+    def _settle_mid(self, beat_id: str) -> None:
+        """beat 播完：结束帧（动作结束、beat 末尾）上也有的问题已经照常报了，中途的不再重复；
+        同一个问题在这个 beat 里只记第一次出现的时刻。都按 Problem.ident() 认（文字段的位置，不是文字内容：
+        读数在变，同一段字每一刻的文字都不一样；同一个组件里不同的标注位置不同，不会被并成一条）。"""
+        seen: set[tuple] = set()
+        for moment, problems in self.mid_pending:
+            for p in problems:
+                ident = p.ident()
+                if (beat_id, ident) in self.rest_seen or ident in seen:
+                    continue
+                seen.add(ident)
+                self.mid_tracker.see(moment, [p])
+        self.mid_pending = []
+
     def _report_lint(self) -> None:
-        """整支片子检查完再报：同一个问题跨 beat 合并成一条，带完整的时间范围。"""
+        """整支片子检查完再报：同一个问题跨 beat 合并成一条，带完整的时间范围。中途的 cross 只提醒。"""
         for f in self.tracker.findings:
             self.problems.append(f.line())
             self.log(f"LINT {f.line()}")
+        for f in self.mid_tracker.findings:
+            if f.problem.kind in MID_ERRORS:
+                self.problems.append(f.line())
+                self.log(f"LINT {f.line()}")
+            else:
+                self.warnings.append(f.line())
+                self.log(f"WARN {f.line()}")
 
     def inspect(self, only: set[str] | None = None, sheets: Path | None = None) -> list[lint.Finding]:
         """不编码视频：逐 beat 编时间线，跳到每个采样点做字形级检查；给了 sheets 就写分镜图。
 
         only 之外的 beat 也要编、要播到末尾（后面的 beat 从它们的结束状态出发），只是不检查、不出图。
+        返回结束帧的问题加上中途的错误（clip / overlap，编号 [midN]）；中途的 cross 只是提醒，在 self.warnings 里。
         """
         from .. import storyboard
 
@@ -634,21 +731,25 @@ class MoxianCompiler:
             chosen = only is None or beat["id"] in only
             cells: list[storyboard.Cell] = []
             renderer = SkiaRenderer(storyboard.CELL_W, storyboard.CELL_H, background=self.t.BG, camera=self.camera)
-            for k, sample in enumerate(plan.samples if chosen else []):
+            for sample in plan.samples if chosen else []:
                 plan.tl.seek(sample.time)
+                if sample.mid is not None:  # 中途采样不出分镜格
+                    self.mid_lint_at(beat["id"], sample)
+                    continue
                 marks = self.lint_at(beat["id"], sample)
                 if sheets is not None:
-                    caption = f"#{k} {beat['id']} t={sample.time:.2f}s  {sample.source}"
+                    caption = f"#{len(cells)} {beat['id']} t={sample.time:.2f}s  {sample.source}"
                     cells.append(storyboard.Cell(renderer.render(self.root), caption, marks))
             plan.tl.seek(plan.until)
             if chosen:
+                self._settle_mid(beat["id"])
                 self._end_checks(beat["id"], plan)
             if cells:
                 storyboard.write_sheets(cells, sheets, beat["id"])
             self.offset += round(plan.until * self.fps) / self.fps + 1 / self.fps
             self.stats["beats"] += 1
         self._report_lint()
-        return self.tracker.findings
+        return self.tracker.findings + [f for f in self.mid_tracker.findings if f.problem.kind in MID_ERRORS]
 
     def _param_layout(self, tl: Timeline, snapshots: list[tuple[float, dict[str, Node]]], pinned: set[str],
                       seen: set[str]) -> list[str]:
@@ -1031,4 +1132,18 @@ class MoxianCompiler:
         subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", str(playlist), "-c", "copy", str(out)], check=True)
         return {"out": str(out), "seconds": round(probe_seconds(out), 1), "beats": [b["id"] for b in self.doc["beats"]],
                 "clip_seconds": [probe_seconds(c) for c in clips], "beat_info": self.beat_info,
-                "layout_problems": self.problems, "stats": self.stats}
+                "layout_problems": self.problems, "layout_warnings": self.warnings, "stats": self.stats}
+
+
+def _marked(anim: Animation):
+    """anim 和它的子动画（together 里的）里标了中途采样的那些。"""
+    if anim.sample_alphas:
+        yield anim
+    for _offset, sub in anim.children():
+        yield from _marked(sub)
+
+
+def _subtree(node: Node):
+    yield node
+    for child in node.children:
+        yield from _subtree(child)
