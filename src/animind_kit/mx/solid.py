@@ -17,7 +17,16 @@
 - apart {split}：底下那块往下、前面那块往画面左边、右边那块往画面右边，各挪 gap；join {split}：拼回去；
   unsplit {split}：换回整个正方体；
 - sweep {z}：截平面（plane.bodies 上方的一块水平面）移到高度 z，每个立体的截面跟着变；第一次 sweep 时截平面出现；
-- compare：截面从立体里"拿出来"平铺到旁边（compare: right / below），是俯视的真实形状，大小可以直接比；之后的 sweep 让它们跟着变。
+- compare：截面从立体里"拿出来"平铺到旁边（compare: right / below），是俯视的真实形状，大小可以直接比；之后的 sweep 让它们跟着变；
+- orbit {azimuth / elevation 或 d_azimuth / d_elevation}：相机连续转到新的视角。每一帧按插值出的角度重新投影全部部件：
+  多面体哪些面朝前（涂色）、哪些棱变虚线，圆柱、圆锥的轮廓和虚线的那半圈（仰角为负时从下面看，底面朝前），截平面和截面，
+  立体之间按远近重排绘制顺序（远的先画，近的盖在上面）；标签跟着立体的投影走，始终正着写在立体下面。
+  方位角写绝对值时走最短的一边（差 ±180° 以内），d_azimuth 原样转（可以转一整圈）；仰角直接插值。
+  转完之后的视角留在组件上（state() / restore()），后面的 sweep / compare / apart 都按新视角算。
+
+转动时画面的缩放不变：后端建组件前把文档里这个对象的全部 orbit 按顺序推演一遍（planned_views），排版按经过的每个视角
+（每 5° 取一个）的投影一起留位置，所以转动中途不出框、不和别的对象重叠（中途采样的版式检查照常做）。没有 orbit 的组件
+和以前完全一样。截平面是立体上固定的一块平面（一组边沿建组件时的画面水平方向），跟着立体一起转。
 
 暴露：每个立体和剖出来的块是片段（obj#C），plane / section[i] / flat[i] 是部件。内置的 show / hide / mark / focus 都能用；
 set {role} 由 restyle 接管：面换填充色、棱换描边色（立体的样式在面和棱各自的节点上，改组的 fill 不起作用）。
@@ -36,13 +45,13 @@ from moxian.core import transform as T
 from moxian.path import Path as VPath
 from moxian.path import polygon
 from scene_spec.selectors import Selector
-from scene_spec.solid import body_size
+from scene_spec.solid import VIEW, body_size
 
-from .dots import FadeTo, Travel, reserve, straight
+from .dots import FadeTo, reserve
 from .text import rich
 from .widgets import Built, Widget
 
-VIEW = (30.0, 20.0)  # 默认方位角、仰角（度）
+ORBIT_STEP = 5.0  # 排版时 orbit 经过的视角每隔几度取一个
 FIT_W, FIT_H = 9.0, 5.0  # 图形撑到的大小（画面单位，排版前）
 LABEL = 32
 EDGE, HIDDEN = 3.0, 2.0  # 实线棱、虚线棱的粗细（1080p 像素）
@@ -62,6 +71,7 @@ class Camera:
 
     def __init__(self, azimuth: float, elevation: float):
         a, e = math.radians(azimuth), math.radians(elevation)
+        self.azimuth, self.elevation = float(azimuth), float(elevation)
         self.a, self.e = a, e
         self.R = np.array([math.cos(a), math.sin(a), 0.0])
         self.U = np.array([-math.sin(a) * math.sin(e), math.cos(a) * math.sin(e), math.cos(e)])
@@ -71,6 +81,46 @@ class Camera:
         """3D 点（n×3 或 3）→ 画面点（n×2 或 2）。"""
         pts = np.asarray(pts, dtype=float)
         return np.stack([pts @ self.R, pts @ self.U], axis=-1)
+
+
+def orbit_target(view: tuple[float, float], args: dict) -> tuple[float, float]:
+    """orbit 转到的 (方位角, 仰角)：绝对的方位角走最短的一边（正好差 180° 时往正方向转；结果不取模，
+    插值时直接线性走过去），增量原样加。"""
+    az, el = view
+    if "azimuth" in args:
+        az -= (az - float(args["azimuth"]) + 180.0) % 360.0 - 180.0
+    elif "d_azimuth" in args:
+        az += float(args["d_azimuth"])
+    if "elevation" in args:
+        el = float(args["elevation"])
+    elif "d_elevation" in args:
+        el += float(args["d_elevation"])
+    return az, el
+
+
+def orbit_steps(v0: tuple[float, float], v1: tuple[float, float], step: float = ORBIT_STEP) -> list[tuple[float, float]]:
+    """从 v0 转到 v1 一路经过的视角（不含 v0，含 v1），相邻两个差不超过 step 度。"""
+    n = max(1, math.ceil(max(abs(v1[0] - v0[0]), abs(v1[1] - v0[1])) / step))
+    return [(v0[0] + (v1[0] - v0[0]) * i / n, v0[1] + (v1[1] - v0[1]) * i / n) for i in range(1, n + 1)]
+
+
+def planned_views(doc: dict, obj_id: str) -> list[tuple[float, float]]:
+    """文档里对象 obj_id 的全部 orbit 按顺序推演，一路经过的视角（不含起始视角）；排版按它们留位置。"""
+    from scene_spec import selectors
+
+    view = (doc.get("objects") or {}).get(obj_id, {}).get("view") or {}
+    v = (float(view.get("azimuth", VIEW[0])), float(view.get("elevation", VIEW[1])))
+    out: list[tuple[float, float]] = []
+    for beat in doc.get("beats") or []:
+        for action in beat.get("do") or []:
+            if action.get("act") != "orbit" or not isinstance(action.get("target"), str):
+                continue
+            sel = selectors.parse(action["target"])
+            if sel is not None and sel.obj == obj_id:
+                v1 = orbit_target(v, action.get("args") or {})
+                out += orbit_steps(v, v1)
+                v = v1
+    return out
 
 
 # ---------- 立体的几何（局部坐标：底面中心在原点） ----------
@@ -259,17 +309,30 @@ class _Body:
     at: np.ndarray
     role: str
     node: Group = None  # type: ignore[assignment]
-    faces: list[PathNode] = field(default_factory=list)  # 换颜色时改 fill
-    lines: list[PathNode] = field(default_factory=list)  # 换颜色时改 stroke
+    faces: list[PathNode] = field(default_factory=list)  # 换颜色时改 fill；每个面（圆柱、圆锥是侧面和底面）一个节点，背对观者时路径为空
+    lines: list[PathNode] = field(default_factory=list)  # 换颜色时改 stroke：[实线, 虚线]
+    label: Node | None = None
+    off: np.ndarray = field(default_factory=lambda: np.zeros(3))  # 现在画面上挪开了多少（立体坐标，apart / join）
+    front: list[bool] = field(default_factory=list)  # 多面体：每个面现在是否朝向观者
+    edges: dict[tuple[int, int], bool] = field(default_factory=dict)  # 多面体：棱（顶点序号）→ 现在是否画实线
 
 
 class Solid(Widget):
     name = "solid"
 
+    @staticmethod
+    def plan_opts(doc: dict, obj_id: str) -> dict:
+        """后端建组件前调：文档里这个对象的 orbit 一路经过的视角，排版按它们留位置。"""
+        views = planned_views(doc, obj_id)
+        return {"views": views} if views else {}
+
     def build(self) -> Built:
         d = self.definition
         view = d.get("view", {})
-        self.cam = Camera(float(view.get("azimuth", VIEW[0])), float(view.get("elevation", VIEW[1])))
+        self.view = (float(view.get("azimuth", VIEW[0])), float(view.get("elevation", VIEW[1])))  # 推演到的视角（建动作时就改）
+        self.cam = Camera(*self.view)  # 画面上现在的视角（播放时才改）
+        self.plane_R = self.cam.R  # 截平面的一组边沿建组件时的画面水平方向：之后跟着立体一起转
+        self.extra_cams = [Camera(*v) for v in self.opts.get("views", ())]
         self.label_floor = "label"
         self.label_size = float(self.opts.get("label_size", LABEL))
         self.acted = False
@@ -287,14 +350,10 @@ class Solid(Widget):
             a = cube.shape.h
             roles = sp.get("roles", SPLIT_ROLES)
             names = list(sp["into"])
-            dirs = []
-            # 挪开的方向：底下那块往下，前面那块往画面左边，右边那块往画面右边（沿底面法向挪时前面和底下两块在画面上叠在一起）
-            away = [np.array([0.0, 0.0, -1.0]), -self.cam.R, self.cam.R]
-            for name, (shape, _normal), role, n in zip(names, cube_pieces(a), roles, away):
+            for name, (shape, _normal), role in zip(names, cube_pieces(a), roles):
                 self.bodies[name] = _Body(name, shape, cube.at.copy(), role)
-                dirs.append(n)
-            self.splits[sname] = {"body": sp["body"], "pieces": names, "dirs": dirs, "gap": float(sp.get("gap", 0.75 * a)),
-                                  "state": "whole"}
+            self.splits[sname] = {"body": sp["body"], "pieces": names, "dirs": _away(self.cam),
+                                  "gap": float(sp.get("gap", 0.75 * a)), "state": "whole"}
         piece_names = {n for sp in self.splits.values() for n in sp["pieces"]}
 
         plane = d.get("plane")
@@ -304,6 +363,7 @@ class Solid(Widget):
             hi = max(self.bodies[n].at[2] + self.bodies[n].shape.h for n in self.plane_bodies)
             self.z_range = (lo, hi)
             self.z = float(plane.get("z", (lo + hi) / 2))
+            self.z_now = self.z  # 画面上截平面现在的高度
         self.compare = plane.get("compare") if plane else None
         self.compared = False
         self.plane_shown = False
@@ -336,36 +396,74 @@ class Solid(Widget):
         self.items = [b.node for n, b in self.bodies.items() if n not in piece_names]
         return Built(Group(fig, name=self.obj_id), spans=spans, parts=parts, items=self.items)
 
+    # ---------- 视角：组件状态 ----------
+
+    def state(self) -> dict:
+        """推演到的视角（orbit 转完之后的方位角、仰角）；restore 时画面直接换到这个视角。"""
+        return {"view": list(self.view)}
+
+    def restore(self, state: dict) -> None:
+        view = state.get("view")
+        if view is None:
+            return
+        self.view = (float(view[0]), float(view[1]))
+        self._look(Camera(*self.view))
+
+    def _look(self, cam: Camera) -> None:
+        """换成视角 cam 并重算全部投影。"""
+        self.cam = cam
+        self._rebuild_projection()
+
+    def _rebuild_projection(self) -> None:
+        """按现在的 self.cam 重算每个立体的面、实线 / 虚线棱、位置、标签，截平面和截面；立体按远近重排绘制顺序。
+        节点都是原来那些（片段、部件、换颜色的动画拿着的引用不变），只换路径和矩阵。"""
+        for b in self.bodies.values():
+            self.body_box[b.name] = self._proj_box(b.shape.outline_pts() + b.at)
+            self._project(b)
+        nodes = {id(b.node) for b in self.bodies.values()}
+        slots = [i for i, n in enumerate(self.fig.children) if id(n) in nodes]
+        V = self.cam.V
+        order = sorted(self.bodies.values(), key=lambda b: float(np.dot(b.at + b.off + b.shape.outline_pts().mean(axis=0), V)))
+        for i, b in zip(slots, order):
+            self.fig.children[i] = b.node
+        if self.plane_bodies:
+            self._place(self.z_now, flats=False)
+
     # ---------- 版面 ----------
 
-    def _proj_box(self, pts3: np.ndarray) -> tuple[float, float, float, float]:
-        p = self.cam.p(pts3)
+    def _proj_box(self, pts3: np.ndarray, cam: Camera | None = None) -> tuple[float, float, float, float]:
+        p = (cam or self.cam).p(pts3)
         return float(p[:, 0].min()), float(p[:, 1].min()), float(p[:, 0].max()), float(p[:, 1].max())
 
     def _fit(self, label_h: float) -> float:
-        """按现在的标签高度（图形单位）排好平铺截面的位置，算出包围盒和缩放。"""
+        """按现在的标签高度（图形单位）排好平铺截面的位置，算出包围盒和缩放。有 orbit 时按经过的每个视角一起留位置。"""
         boxes = []
         self.body_box: dict[str, tuple[float, float, float, float]] = {}
-        for name, b in self.bodies.items():
-            box_ = self._proj_box(b.shape.outline_pts() + b.at)
-            self.body_box[name] = box_
-            boxes.append(box_)
-            if self.definition["bodies"].get(name, {}).get("label"):
-                boxes.append((box_[0], box_[1] - 0.15 * label_h - label_h * 1.1, box_[2], box_[1]))
-        for sp in self.splits.values():
-            for name, n in zip(sp["pieces"], sp["dirs"]):
-                b = self.bodies[name]
-                boxes.append(self._proj_box(b.shape.outline_pts() + b.at + n * sp["gap"]))
-        if self.plane_bodies:
-            lo, hi = self.z_range
-            boxes += [self._proj_box(self._plane_corners(z)) for z in (lo, hi)]
-            if self.compare:
-                self._layout_flats(_union(boxes), label_h)
-                for i, slot in enumerate(self.slots):
-                    fx0, fy0, fx1, fy1 = self.slot_size[i]
-                    boxes.append((slot[0] + fx0, slot[1] + fy0, slot[0] + fx1, slot[1] + fy1))
-                    if self.definition["plane"].get("labels"):
-                        boxes.append((slot[0] + fx0, slot[1] + fy0 - 0.25 * label_h - label_h * 1.1, slot[0] + fx1, slot[1] + fy0))
+        cams = [self.cam, *self.extra_cams]
+        away = [_away(c) for c in cams] if self.splits else []  # apart 按做动作时的视角挪：每种挪法在每个视角下都要放得下
+        for cam in cams:
+            for name, b in self.bodies.items():
+                box_ = self._proj_box(b.shape.outline_pts() + b.at, cam)
+                if cam is self.cam:
+                    self.body_box[name] = box_
+                boxes.append(box_)
+                if self.definition["bodies"].get(name, {}).get("label"):
+                    boxes.append((box_[0], box_[1] - 0.15 * label_h - label_h * 1.1, box_[2], box_[1]))
+            for sp in self.splits.values():
+                for dirs in away:
+                    for name, n in zip(sp["pieces"], dirs):
+                        b = self.bodies[name]
+                        boxes.append(self._proj_box(b.shape.outline_pts() + b.at + n * sp["gap"], cam))
+            if self.plane_bodies:
+                lo, hi = self.z_range
+                boxes += [self._proj_box(self._plane_corners(z), cam) for z in (lo, hi)]
+        if self.plane_bodies and self.compare:
+            self._layout_flats(_union(boxes), label_h)
+            for i, slot in enumerate(self.slots):
+                fx0, fy0, fx1, fy1 = self.slot_size[i]
+                boxes.append((slot[0] + fx0, slot[1] + fy0, slot[0] + fx1, slot[1] + fy1))
+                if self.definition["plane"].get("labels"):
+                    boxes.append((slot[0] + fx0, slot[1] + fy0 - 0.25 * label_h - label_h * 1.1, slot[0] + fx1, slot[1] + fy0))
         x0, y0, x1, y1 = _union(boxes)
         pad = 0.04 * max(x1 - x0, y1 - y0)
         self.box = (x0 - pad, y0 - pad, x1 + pad, y1 + pad)
@@ -390,9 +488,9 @@ class Solid(Widget):
             self.bodies[n].at = (x - mid) * self.cam.R
 
     def _plane_corners(self, z: float) -> np.ndarray:
-        """截平面：高度 z 处的一块水平平行四边形，一组边沿 R（画面向右），另一组沿 y（向里，画面上是斜的，看得出是平面），
-        盖住 plane.bodies 的底面再多出一点。"""
-        R, Y = self.cam.R, np.array([0.0, 1.0, 0.0])
+        """截平面：高度 z 处的一块水平平行四边形，一组边沿建组件时的画面水平方向 R，另一组沿 y（向里，画面上是斜的，
+        看得出是平面），盖住 plane.bodies 的底面再多出一点。它固定在立体上，orbit 时跟着一起转。"""
+        R, Y = self.plane_R, np.array([0.0, 1.0, 0.0])
         pts = np.vstack([self.bodies[n].shape.outline_pts() + self.bodies[n].at for n in self.plane_bodies])
         s = pts[:, 0] / R[0]  # p = s·R + f·Y
         f = pts[:, 1] - s * R[1]
@@ -436,29 +534,52 @@ class Solid(Widget):
         return self.theme.color(role), self.theme.ink(role)
 
     def _body_node(self, b: _Body) -> Group:
-        cam, k = self.cam, self.k
+        """建立体的节点：每个面一个填充节点（颜色深浅按朝向，和视角无关）、实线和虚线两个描边节点、标签；
+        路径和位置由 _project 按现在的视角填。"""
         fill, ink = self._paint(b.role)
         g = Group(name=b.name)
-        g.matrix = T.translate(*cam.p(b.at))
         faces = Group(name="faces")
+        s = b.shape
+        if s.kind == "poly":
+            for f in s.faces:
+                n = _normal(s.verts, f)
+                shade = FILL * (1.4 - 0.8 * max(0.0, float(np.dot(n, LIGHT))))
+                faces.add(PathNode(path=VPath(), style=Style(fill=fill, fill_opacity=shade)))
+        else:  # 侧面、底面（圆柱从上面看是顶面）
+            cap = FILL * 0.7 if s.kind == "cylinder" else FILL
+            faces.add(PathNode(path=VPath(), style=Style(fill=fill, fill_opacity=FILL * 1.15)),
+                      PathNode(path=VPath(), style=Style(fill=fill, fill_opacity=cap)))
+        g.add(faces)
+        lines = [PathNode(path=VPath(), style=Style(stroke=ink, stroke_width=EDGE)),
+                 PathNode(path=VPath(), style=Style(stroke=ink, stroke_width=HIDDEN, stroke_opacity=HIDDEN_OPACITY))]
+        g.add(*lines)
+        b.faces, b.lines = list(faces.children), lines
+        label = self.definition["bodies"].get(b.name, {}).get("label")
+        if label:
+            b.label = self._label(label, b.role)
+            g.add(b.label)
+        b.node = g
+        self._project(b)
+        return g
+
+    def _project(self, b: _Body) -> None:
+        """按现在的视角填立体的路径：朝前的面、实线棱、虚线棱；位置（含挪开的量）；标签在投影的正下方居中。"""
+        cam, k = self.cam, self.k
+        b.node.matrix = T.translate(*cam.p(b.at + b.off)) if b.off.any() else T.translate(*cam.p(b.at))
         visible, hidden = VPath(), VPath()
         s = b.shape
         if s.kind == "poly":
             front = []
-            for f in s.faces:
+            for f, node in zip(s.faces, b.faces):
                 v = s.verts
-                n = np.cross(v[f[1]] - v[f[0]], v[f[2]] - v[f[0]])
-                n /= np.linalg.norm(n)
-                front.append(float(np.dot(n, cam.V)) > 1e-6)
-                if front[-1]:
-                    shade = FILL * (1.4 - 0.8 * max(0.0, float(np.dot(n, LIGHT))))
-                    faces.add(PathNode(path=polygon([tuple(p) for p in cam.p(v[f])]),
-                                       style=Style(fill=fill, fill_opacity=shade)))
+                front.append(float(np.dot(_normal(v, f), cam.V)) > 1e-6)
+                node.path = polygon([tuple(p) for p in cam.p(v[f])]) if front[-1] else VPath()
             edges: dict[tuple[int, int], bool] = {}
             for f, on in zip(s.faces, front):
                 for i in range(len(f)):
                     e = tuple(sorted((f[i], f[(i + 1) % len(f)])))
                     edges[e] = edges.get(e, False) or on
+            b.front, b.edges = front, edges
             hidden_segs = []
             for (i, j), on in edges.items():
                 p, q = cam.p(s.verts[i]), cam.p(s.verts[j])
@@ -469,26 +590,22 @@ class Solid(Widget):
             for p, q in hidden_segs:
                 hidden.extend(dashed(np.array([p, q]), DASH / k, GAP / k))
         else:
-            self._round(s, faces, visible, hidden, fill)
-        g.add(faces)
-        lines = [PathNode(path=visible, style=Style(stroke=ink, stroke_width=EDGE)),
-                 PathNode(path=hidden, style=Style(stroke=ink, stroke_width=HIDDEN, stroke_opacity=HIDDEN_OPACITY))]
-        g.add(*lines)
-        b.faces, b.lines = list(faces.children), lines
-        label = self.definition["bodies"].get(b.name, {}).get("label")
-        if label:
-            lab = self._label(label, b.role)
+            self._round(s, b.faces, visible, hidden)
+        b.lines[0].path, b.lines[1].path = visible, hidden
+        if b.label is not None:
+            lab = b.label
             x0, y0, x1, _ = self.body_box[b.name]
             lab.matrix = T.translate((x0 + x1) / 2 - cam.p(b.at)[0], y0 - cam.p(b.at)[1] - 0.15 * self.label_h / k
                                      - lab.height / 2 / k) @ T.scale(1 / k)
-            g.add(lab)
-        b.node = g
-        return g
 
-    def _round(self, s: Shape, faces: Group, visible: VPath, hidden: VPath, fill: str) -> None:
-        """圆柱、圆锥（局部画面坐标）：底面椭圆半轴 r 和 r·sin(仰角)，前半圈在下面。"""
+    def _round(self, s: Shape, faces: list[PathNode], visible: VPath, hidden: VPath) -> None:
+        """圆柱、圆锥（局部画面坐标）：底面椭圆半轴 r 和 r·|sin(仰角)|，转轴是竖直的，所以和方位角无关。
+        椭圆按 (r·cosφ, r·sinφ·sin(仰角)) 取点：sinφ < 0 的半圈离观者近。仰角为正时从上面看（圆柱看得见顶面，
+        底面后半圈是虚线）；为负时从下面看（看得见底面，圆柱顶面后半圈是虚线，圆锥的底面整个朝前）。"""
         r, h, e, k = s.r, s.h, self.cam.e, self.k
         b, H = r * math.sin(e), h * math.cos(e)
+        side, cap = faces
+        side.path, cap.path = VPath(), VPath()
 
         def arc(p0: float, p1: float, z: float) -> np.ndarray:
             n = max(8, int(abs(p1 - p0) / (2 * math.pi) * N_ROUND))
@@ -497,28 +614,33 @@ class Solid(Widget):
 
         pi = math.pi
         if s.kind == "cylinder":
-            side = np.vstack([arc(pi, 2 * pi, h), arc(2 * pi, pi, 0.0)])
-            faces.add(PathNode(path=polyline(side, closed=True), style=Style(fill=fill, fill_opacity=FILL * 1.15)))
-            faces.add(PathNode(path=polyline(arc(0, 2 * pi, h), closed=True), style=Style(fill=fill, fill_opacity=FILL * 0.7)))
-            polyline(arc(0, 2 * pi, h), closed=True, path=visible)
-            polyline(arc(pi, 2 * pi, 0.0), path=visible)
+            near, far = (h, 0.0) if e >= 0 else (0.0, h)  # 整个看得见的那个底面、只看得见前半圈的那个
+            side.path = polyline(np.vstack([arc(pi, 2 * pi, h), arc(2 * pi, pi, 0.0)]), closed=True)
+            cap.path = polyline(arc(0, 2 * pi, near), closed=True)
+            polyline(arc(0, 2 * pi, near), closed=True, path=visible)
+            polyline(arc(pi, 2 * pi, far), path=visible)
             for x in (-r, r):
                 visible.move_to(x, 0.0).line_to(x, H)
-            hidden.extend(dashed(arc(0, pi, 0.0), DASH / k, GAP / k))
+            hidden.extend(dashed(arc(0, pi, far), DASH / k, GAP / k))
             return
-        if H <= b * 1.0001:  # 很扁的圆锥：顶点落在底面椭圆里，只看见底面
-            faces.add(PathNode(path=polyline(arc(0, 2 * pi, 0.0), closed=True), style=Style(fill=fill, fill_opacity=FILL)))
+        if H <= abs(b) * 1.0001:  # 很扁的圆锥（或几乎正对着顶点 / 底面看）：顶点落在底面椭圆里，只看见一个椭圆
+            cap.path = polyline(arc(0, 2 * pi, 0.0), closed=True)
             polyline(arc(0, 2 * pi, 0.0), closed=True, path=visible)
             return
-        p1 = math.asin(b / H)
+        p1 = math.asin(b / H)  # 切点：sinφ = b / H
         p2 = pi - p1
-        front = arc(p2, 2 * pi + p1, 0.0)
-        faces.add(PathNode(path=polyline(np.vstack([[[0.0, H]], front]), closed=True),
-                           style=Style(fill=fill, fill_opacity=FILL * 1.15)))
-        polyline(front, path=visible)
-        for p in (front[0], front[-1]):
-            visible.move_to(0.0, H).line_to(float(p[0]), float(p[1]))
-        hidden.extend(dashed(arc(p1, p2, 0.0), DASH / k, GAP / k))
+        rim = arc(p2, 2 * pi + p1, 0.0)  # 两个切点之间离观者近的那段（从上面看在下边，从下面看在上边）
+        side.path = polyline(np.vstack([[[0.0, H]], rim]), closed=True)
+        if e >= 0:
+            polyline(rim, path=visible)
+            for p in (rim[0], rim[-1]):
+                visible.move_to(0.0, H).line_to(float(p[0]), float(p[1]))
+            hidden.extend(dashed(arc(p1, p2, 0.0), DASH / k, GAP / k))
+        else:  # 从下面看：底面整个朝前，盖住侧面靠近观者的那一半
+            cap.path = polyline(arc(0, 2 * pi, 0.0), closed=True)
+            polyline(arc(0, 2 * pi, 0.0), closed=True, path=visible)
+            for p in (rim[0], rim[-1]):
+                visible.move_to(0.0, H).line_to(float(p[0]), float(p[1]))
 
     def _build_plane(self, fig: Group) -> None:
         t = self.theme
@@ -558,8 +680,8 @@ class Solid(Widget):
         local = b.shape.section(z - b.at[2])
         return None if local is None else local + b.at
 
-    def _projected(self, pts: np.ndarray | None) -> np.ndarray | None:
-        return None if pts is None else self.cam.p(pts)
+    def _projected(self, pts: np.ndarray | None, cam: Camera | None = None) -> np.ndarray | None:
+        return None if pts is None else (cam or self.cam).p(pts)
 
     def _flat(self, i: int, pts: np.ndarray | None) -> np.ndarray | None:
         if pts is None:
@@ -568,6 +690,7 @@ class Solid(Widget):
         return pts[:, :2] - b.at[:2] + self.slots[i]
 
     def _place(self, z: float, flats: bool) -> None:
+        self.z_now = z
         self.plane_node.path = polygon([tuple(p) for p in self.cam.p(self._plane_corners(z))])
         for i, sec in enumerate(self.sections):
             pts = self._section_pts(i, z)
@@ -585,27 +708,52 @@ class Solid(Widget):
             return self._sweep(float(args["z"]))
         if act == "compare":
             return self._compare()
+        if act == "orbit":
+            return self._orbit(args)
         raise KeyError(f"组件 {self.name} 没有动作 {act}")
+
+    def _orbit(self, args: dict) -> list[Animation]:
+        """相机从推演到的视角连续转到新视角；每一帧按插值出的角度重算全部投影。中途在每 30° 左右采样做版式检查。"""
+        v0 = self.view
+        v1 = orbit_target(v0, args)
+        self.view = v1
+        turn = max(abs(v1[0] - v0[0]), abs(v1[1] - v0[1]))
+
+        def step(alpha: float) -> None:
+            self._look(Camera(v0[0] + (v1[0] - v0[0]) * alpha, v0[1] + (v1[1] - v0[1]) * alpha))
+
+        n = max(4, math.ceil(turn / 30.0))
+        return [_Func(step, min(4.0, 1.0 + turn / 90.0)).sampled([i / n for i in range(1, n)])]
 
     def _split_action(self, act: str, sp: dict) -> list[Animation]:
         cube = self.bodies[sp["body"]].node
-        pieces = [self.bodies[n].node for n in sp["pieces"]]
+        pieces = [self.bodies[n] for n in sp["pieces"]]
         if act in ("split", "unsplit"):
             on = act == "split"
             sp["state"] = "joined" if on else "whole"
+            nodes = [p.node for p in pieces]
             if on:
-                self._swap_items([cube], pieces)
+                self._swap_items([cube], nodes)
             else:
-                self._swap_items(pieces, [cube])
-            return [FadeTo(cube, 0.0 if on else 1.0, 0.6)] + [FadeTo(p, 1.0 if on else 0.0, 0.6) for p in pieces]
+                self._swap_items(nodes, [cube])
+            return [FadeTo(cube, 0.0 if on else 1.0, 0.6)] + [FadeTo(p, 1.0 if on else 0.0, 0.6) for p in nodes]
         apart = act == "apart"
         sp["state"] = "apart" if apart else "joined"
+        if apart:
+            sp["dirs"] = _away(Camera(*self.view))  # 按做动作时的视角：前面那块往画面左边、右边那块往画面右边
         out: list[Animation] = []
-        for node, n in zip(pieces, sp["dirs"]):
-            off = self.cam.p(n * sp["gap"])
-            a, b = (np.zeros(2), off) if apart else (off, np.zeros(2))
-            out.append(Travel(node, straight(a, b), 1.0))
+        for b, n in zip(pieces, sp["dirs"]):
+            a, c = (np.zeros(3), n * sp["gap"]) if apart else (n * sp["gap"], np.zeros(3))
+            out.append(_Func(self._shift(b, a, c), 1.0))
         return out
+
+    def _shift(self, b: _Body, a: np.ndarray, c: np.ndarray) -> Callable[[float], None]:
+        """块从挪开 a 移到挪开 c（立体坐标）：每一帧按现在的视角重新投影，和 orbit 同时播也对。"""
+        def fn(alpha: float) -> None:
+            b.off = a + (c - a) * alpha
+            b.node.matrix = T.translate(*(self.cam.p(b.at) + self.cam.p(c - a) * alpha + self.cam.p(a)))
+
+        return fn
 
     def _swap_items(self, old: list[Node], new: list[Node]) -> None:
         """items 是"现在看得见的立体"（同一个列表对象，原地更新）：内置的 focus 只调暗它们。"""
@@ -625,11 +773,11 @@ class Solid(Widget):
 
     def _compare(self) -> list[Animation]:
         self.compared = True
-        z = self.z
+        z, cam = self.z, Camera(*self.view)  # 推演到的视角：前面的 orbit 播完之后画面上就是它
         pairs = []
         for i in range(len(self.sections)):
             pts = self._section_pts(i, z)
-            pairs.append((self._projected(pts), self._flat(i, pts)))
+            pairs.append((self._projected(pts, cam), self._flat(i, pts)))
 
         def morph(alpha: float) -> None:
             for flat, (a, b) in zip(self.flats, pairs):
@@ -669,6 +817,17 @@ class Solid(Widget):
                     out.append(Restyle(node, d, opacity=float(args["opacity"])))
             return out
         return None
+
+
+def _normal(verts: np.ndarray, f: list[int]) -> np.ndarray:
+    n = np.cross(verts[f[1]] - verts[f[0]], verts[f[2]] - verts[f[0]])
+    return n / np.linalg.norm(n)
+
+
+def _away(cam: Camera) -> list[np.ndarray]:
+    """apart 时三块挪开的方向：底下那块往下，前面那块往画面左边，右边那块往画面右边（沿底面法向挪时前面和底下两块
+    在画面上叠在一起）。"""
+    return [np.array([0.0, 0.0, -1.0]), -cam.R, cam.R]
 
 
 def _union(boxes: list[tuple[float, float, float, float]]) -> tuple[float, float, float, float]:

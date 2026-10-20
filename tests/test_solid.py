@@ -60,7 +60,7 @@ def test_camera_is_orthonormal_and_avoids_the_isometric_overlap():
 def test_cube_shows_three_faces_and_three_dashed_edges():
     s = solid(bodies={"C": {"cube": 2}})
     b = s.bodies["C"]
-    assert len(b.faces) == 3  # 前、右、上
+    assert len(b.faces) == 6 and sum(not f.path.is_empty() for f in b.faces) == 3  # 每个面一个节点，画出来的是前、右、上
     hidden = b.lines[1].path
     assert not hidden.is_empty() and len(hidden.subpaths) > 3  # 虚线：每条棱好几段
     assert b.lines[1].style.stroke_opacity < 1 and b.lines[0].style.stroke_opacity == 1
