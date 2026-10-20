@@ -153,9 +153,9 @@ def beat_info_estimated(doc: dict, audio_dir: Path | None) -> dict:
     """没有子步定格的后端（Manim）：句子时刻直接取 timing.json。"""
     from . import timing
 
-    out = {}
+    out, lang = {}, timing.lang_of(doc)
     for beat in doc["beats"]:
-        bt = timing.load(beat, audio_dir)
+        bt = timing.load(beat, audio_dir, lang)
         out[beat["id"]] = {"cues": [{"start": s.start, "end": s.end, "marks": s.marks, "words": s.words} for s in bt.sentences],
                            "steps": []}
     return out

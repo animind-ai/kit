@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from scene_spec import check_timing, pauses
+from zh_math_reading import normalize
 
 _BOOKMARK = re.compile(r"\{@([A-Za-z_][A-Za-z0-9_]*)\}")
 
@@ -50,19 +51,39 @@ class BeatTiming:
         return next(s for s in self.sentences if s.id == ref)
 
 
-def _mark_fractions(text: str) -> dict[str, float]:
-    stripped = _BOOKMARK.sub("", text)
-    total = max(1, len(stripped))
-    fractions, consumed = {}, 0
-    for m in _BOOKMARK.finditer(text):
-        plain_before = len(_BOOKMARK.sub("", text[: m.start()]))
-        fractions[m.group(1)] = plain_before / total
-        consumed += 1
-    return fractions
+def lang_of(doc: dict) -> str:
+    """场景的旁白语言：style.lang，和 voice 的 script.lang 一样；没写就是中文。"""
+    return doc.get("style", {}).get("lang", "zh")
 
 
-def load(beat: dict, audio_dir: Path | None) -> BeatTiming:
+def spoken(text: str, lang: str = "zh") -> str:
+    """旁白真正念的文本（书签保留，位置对得上）。中文版和 voice 一样过 zh-math-reading 的 normalize：
+    `$...$` 换成读法，所以公式的字数是它念出来的字数，不是 LaTeX 源码的字符数。英文版原样（英文稿本来就把公式写成词）。"""
+    return normalize(text) if lang == "zh" else text
+
+
+def _weight(text: str, lang: str) -> int:
+    """估算时一段文字占的字数（每个字 0.22 秒）。
+
+    中文版：每个非空白字计 1，包括标点——句中的标点是一个短停顿，记作一个字的长度（假设，见 tests/fixtures/timing_truth.json）。
+    空白不计：normalize 为公式读法加的空格、作者排版的空格都不念。句间的停顿另由 silence_after 给。
+    英文版照旧数字符（英文的空格是词与词之间的停顿，本来就算在内）。书签不算。
+    """
+    plain = _BOOKMARK.sub("", text)
+    if lang != "zh":
+        return len(plain)
+    return len("".join(plain.split()))
+
+
+def _mark_fractions(text: str, lang: str = "zh") -> dict[str, float]:
+    """书签在句子里的相对位置（0–1）：书签前面的字数 / 整句的字数。text 应该已经是 spoken() 的结果。"""
+    total = max(1, _weight(text, lang))
+    return {m.group(1): _weight(text[: m.start()], lang) / total for m in _BOOKMARK.finditer(text)}
+
+
+def load(beat: dict, audio_dir: Path | None, lang: str = "zh") -> BeatTiming:
     say = beat.get("say", [])
+    texts = [spoken(s["text"], lang) for s in say]  # 估算用的是念出来的字数；书签位置也在这个文本上
     cues, total, source = None, None, "estimated"
     aligned: dict[str, dict[str, float]] = {}
     words: dict[str, dict] = {}
@@ -77,17 +98,17 @@ def load(beat: dict, audio_dir: Path | None) -> BeatTiming:
                 raise ValueError(f"{path.name} 有 {len(cues)} 句，scene 里 {beat['id']} 有 {len(say)} 句")
     if cues is None:  # 没有音频：按每个汉字 0.22 秒估；句间静音和 voice 合成的一样，按句末标点（scene-spec 的 silence_after）
         cues, cursor = [], 0.3
-        for i, s in enumerate(say):
-            seconds = max(1.0, len(_BOOKMARK.sub("", s["text"])) * 0.22)
+        for i, (s, text) in enumerate(zip(say, texts)):
+            seconds = max(1.0, _weight(text, lang) * 0.22)
             cues.append({"start": cursor, "end": cursor + seconds})
             cursor += seconds
             if i < len(say) - 1:  # 最后一句之后不插静音，和 voice 一致
                 cursor += pauses.silence_after(s["text"], s.get("hold"))
         total = cursor
     sentences = []
-    for i, (s, cue) in enumerate(zip(say, cues)):
+    for i, (s, text, cue) in enumerate(zip(say, texts, cues)):
         span = cue["end"] - cue["start"]
-        marks = {name: cue["start"] + frac * span for name, frac in _mark_fractions(s["text"]).items()}
+        marks = {name: cue["start"] + frac * span for name, frac in _mark_fractions(text, lang).items()}
         real = aligned.get(s.get("id") or str(i), {})
         marks.update({k: v for k, v in real.items() if k in marks})
         sentences.append(Sentence(s.get("id"), cue["start"], cue["end"], marks, words.get(s.get("id") or str(i))))

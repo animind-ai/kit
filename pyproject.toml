@@ -11,6 +11,7 @@ dependencies = [
   "moxian",
   "PyYAML>=6.0",
   "scene-spec",
+  "zh-math-reading",
 ]
 
 [project.scripts]
@@ -19,6 +20,7 @@ animind-kit = "animind_kit.cli:main"
 [tool.uv.sources]
 scene-spec = { path = "../scene-spec", editable = true }
 moxian = { path = "../moxian", editable = true }
+zh-math-reading = { path = "../zh-math-reading", editable = true }
 
 [dependency-groups]
 dev = ["pytest>=8"]
