@@ -1,9 +1,11 @@
 """命令行：
-    animind-kit render 场景文件 --out 成片 [--audio 目录] [--quality l|m|h] [--lang en]
+    animind-kit render 场景文件 --out 成片 [--audio 目录] [--quality l|m|h] [--lang en] [--only BEAT ...] [--no-cache]
     animind-kit inspect 场景文件 [--beat X] [--out 分镜图目录] [--audio 目录] [--lang en]
+    animind-kit regress [-j N] [--update]
 
 render 写 成片旁边的 timing-report.json，inspect 写到 --out（默认 build/inspect/<名>）。两者都过 scene-spec 的时间门禁
 （CUE LATE 的 SS480、句间静音 SS487）：有错误就非零退出。regress 不做这个门禁。
+render（墨线）按 beat 缓存：内容哈希没变的 beat 直接复用上次的分段；--only 只出选中 beat 的 <beat>.mp4（门禁只查它们）。
 """
 
 from __future__ import annotations
@@ -27,6 +29,11 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--burn-subtitles", action="store_true",
                    help="soft 模式下另出一份把字幕烧进画面的 <名>.burned.mp4")
     r.add_argument("--theme", help="覆盖场景文件里的 style.theme：palette 主题名，或一个同格式的 .json 文件")
+    r.add_argument("--only", action="append", metavar="BEAT",
+                   help="只渲染这个 beat（可重复，墨线后端）：写成 --out 所在目录下的 <BEAT>.mp4（分段本身，不烧字幕），不出成片、"
+                        "不写 timing-report.json；其余 beat 照样推演状态但不渲染；时间门禁只查选中的 beat")
+    r.add_argument("--no-cache", action="store_true",
+                   help="不用 beat 缓存，全部重渲（缓存在 --out 旁边的 .build-<名>-moxian/parts/<beat>.mp4 + .hash）")
     c = sub.add_parser("compare", help="两个后端各渲染一遍并拼出每个 beat 的末帧对照图")
     c.add_argument("spec", type=Path)
     c.add_argument("--out", type=Path, required=True, help="输出目录")
@@ -45,12 +52,14 @@ def main(argv: list[str] | None = None) -> int:
                          help="渲染哪种语言的版本（场景文件里每句的 en + i18n.en），旁白目录要是同一语言合成的")
     g = sub.add_parser("regress", help="截图回归：渲染示例末帧，和 tests/baseline 比对")
     g.add_argument("--update", action="store_true", help="用当前结果覆盖基准图")
+    g.add_argument("-j", "--jobs", type=int, metavar="N",
+                   help="并行渲染示例的进程数，默认 CPU 核数（最多 8）；-j 1 串行。结果、输出顺序和串行一样")
     args = parser.parse_args(argv)
 
     if args.command == "regress":
         from .regress import run
 
-        results = run(args.update)
+        results = run(args.update, jobs=args.jobs)
         for r in results:
             if r.status != "ok":
                 print(f"  {r}")
@@ -81,7 +90,7 @@ def main(argv: list[str] | None = None) -> int:
 
     summary = render(args.spec, args.out, args.audio, args.quality, backend=args.backend,
                      burn_subtitles=args.burn_subtitles, theme_name=args.theme, subtitles=args.subtitles,
-                     lang=args.lang)
+                     lang=args.lang, only=args.only, cache=not args.no_cache)
     # 视频照常写出；版式或时间门禁有错就非零退出（时间错误：CUE LATE 的 SS480、句间静音的 SS487、报告格式 SS481）
     return 1 if summary["layout_problems"] or summary["timing_issues"] else 0
 

@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import os
+import shutil
 import subprocess
 import wave
 from collections.abc import Callable
@@ -43,7 +45,7 @@ from scene_spec import params as spec_params
 from scene_spec import segments as spec_segments
 from scene_spec import selectors
 
-from .. import analysis, lint, segments, subtitles, timing
+from .. import analysis, beat_cache, lint, segments, subtitles, timing
 from ..mx import layout, scan, widgets
 from ..mx.readout import Readout
 from ..mx.text import SCALE, mmath, rich
@@ -195,6 +197,7 @@ class MoxianCompiler:
                  spec_dir: Path | None = None):
         self.doc, self.t, self.audio_dir, self.log = doc, theme, audio_dir, log
         self.spec_dir = spec_dir or Path(".")  # clip 的 src 相对场景文件所在目录
+        self.quality = quality
         self.width, self.height, self.fps = SIZES[quality]
         self.data = doc.get("data", {})
         # 场景参数跨 beat 常驻：每个 beat 的时间线从它们当时的值出发补间
@@ -687,8 +690,9 @@ class MoxianCompiler:
             return frozenset({selectors.parse(action["target"]).obj})
         return None
 
-    def render_beat(self, beat: dict, clip: Path) -> float:
-        plan = self._plan(beat, clip)
+    def render_beat(self, beat: dict, clip: Path, plan: _Plan | None = None) -> float:
+        """光栅化 + 编码一个 beat。plan 给了就用它（render_all 先编好时间线、算缓存键），否则在这里编。"""
+        plan = self._plan(beat, clip) if plan is None else plan
         audio = self._padded_audio(plan.narration, plan.until, clip)
         self._camera_exempt()
         renderer = SkiaRenderer(self.width, self.height, background=self.t.BG, camera=self.camera)
@@ -698,6 +702,19 @@ class MoxianCompiler:
         self.stats["beats"] += 1
         self._end_checks(beat["id"], plan)
         return plan.until
+
+    def _replay(self, beat: dict, plan: _Plan, check: bool = True) -> None:
+        """不画、不编码地播完一个 beat：和 render_video 一样逐帧 seek（版式检查也在同样的采样点做），
+        之后的 beat 就从和真渲染完全相同的状态出发，版式问题也和真渲染一样。
+        check=False（--only 之外的 beat）不做版式检查，和 inspect 只查选中的 beat 一样。"""
+        self._camera_exempt()
+        timeline = _Sampling(plan.tl, plan.samples, lambda s: self.check_at(beat["id"], s)) if check else plan.tl
+        for t in plan.tl.frames(self.fps, plan.until):
+            timeline.seek(t)
+        if check:
+            self._settle_mid(beat["id"])
+            self.stats["beats"] += 1
+            self._end_checks(beat["id"], plan)
 
     def _end_checks(self, beat_id: str, plan: _Plan) -> None:
         pinned = {k for k, v in self.objects.items() if v.definition.get("pin")} | self.seg.pinned
@@ -1189,26 +1206,101 @@ class MoxianCompiler:
 
     # ---------- 整支 ----------
 
-    def render_all(self, out: Path, build: Path) -> dict:
+    def _cache_base(self) -> str:
+        """缓存键里所有 beat 共用的部分（见 beat_cache 的说明）。"""
+        h = beat_cache.Hasher().add("env", beat_cache.environment())
+        h.json("settings", {"quality": self.quality, "size": [self.width, self.height, self.fps], "theme": self.t,
+                            "lang": timing.lang_of(self.doc), "audio": self.audio_dir is not None})
+        h.json("doc", {k: v for k, v in self.doc.items() if k != "beats"})
+        h.json("lifetimes", self.lifetimes)
+        h.json("camera", any(a.get("act") == "camera" for b in self.doc["beats"] for a in b.get("do") or []))
+        h.json("sources", beat_cache.sources(self.doc, self.spec_dir))
+        return h.hexdigest()
+
+    def _audio_digest(self, beat_id: str) -> str:
+        if self.audio_dir is None:
+            return "none"
+        return beat_cache.canonical({ext: beat_cache.file_digest(self.audio_dir / f"{beat_id}{ext}")
+                                     for ext in (".wav", ".timing.json")})
+
+    def _beat_key(self, base: str, before: str, beat: dict, plan: _Plan) -> str:
+        """编好时间线（排完版）、开播之前算：base + 之前各 beat 的链 + 这个 beat 的定义、旁白、解析出的时间 + 此刻的画面状态。"""
+        bid = beat["id"]
+        h = beat_cache.Hasher().add("base", base).add("before", before)
+        h.json("beat", beat).add("audio", self._audio_digest(bid))
+        h.json("timing", {"info": self.beat_info[bid], "report": self.timing_beats[bid], "until": plan.until,
+                          "samples": plan.samples, "freezes": plan.tl.freezes})
+        h.add("narration", beat_cache.file_digest(plan.narration) if plan.narration is not None else "none")
+        h.add("state", beat_cache.scene_state(self.root, self.camera, self.params))
+        return h.hexdigest()
+
+    def render_all(self, out: Path, build: Path, only: set[str] | None = None, cache: bool = True) -> dict:
+        """逐 beat：编时间线 → 算缓存键 → parts/<beat>.mp4 的 .hash 对得上就只推进状态（_replay），否则 render_beat。
+
+        cache=False（--no-cache）：一律重渲（照样写新的 .hash）。
+        only（--only）：只渲染这些 beat，各自复制成 out 旁边的 <beat>.mp4，不拼成片、不动 out；
+        其余 beat 照样编时间线、推进状态（不检查版式、没有缓存也不渲染）。
+        """
         parts = build / "parts"
         parts.mkdir(parents=True, exist_ok=True)
-        clips = []
+        base = self._cache_base()
+        chain = beat_cache.Hasher()  # 之前各 beat 的定义和旁白：编译器里有不在对象树上的跨 beat 状态
+        has_clips = any(self._is_clip(k) for k in self.objects)
+        clips, rendered, cached = [], [], []
+        probed: dict[Path, float] = {}  # 每段只 probe 一次
         for beat in self.doc["beats"]:
-            self.log(f"render {beat['id']}")
-            clip = parts / f"{beat['id']}.mp4"
-            seconds = self.render_beat(beat, clip)
-            clips.append(clip)
-            self.offset += probe_seconds(clip)
-            self.log(f"muxed {beat['id']} {seconds:.1f}s")
+            bid = beat["id"]
+            clip = parts / f"{bid}.mp4"
+            chosen = only is None or bid in only
+            plan = self._plan(beat, clip)
+            self._camera_exempt()  # 垫底色、钉住会改画面；render_beat / _replay 里再调一次不会重复
+            key = self._beat_key(base, chain.hexdigest(), beat, plan)
+            chain.json("beat", beat).add("audio", self._audio_digest(bid))
+            valid = beat_cache.hit(clip, key)
+            fresh = cache and valid
+            if chosen and not fresh:
+                self.log(f"render {bid}")
+                beat_cache.invalidate(clip)
+                seconds = self.render_beat(beat, clip, plan)
+                beat_cache.record(clip, key)
+                rendered.append(bid)
+                self.log(f"muxed {bid} {seconds:.1f}s")
+            else:
+                self._replay(beat, plan, check=chosen)
+                if chosen:
+                    cached.append(bid)
+                    self.log(f"cached {bid} {plan.until:.1f}s（{clip.name} 内容哈希未变，跳过渲染）")
+            if chosen or valid:  # 真渲染了，或者缓存里就是这一段：时长取实际的
+                probed[clip] = probe_seconds(clip)
+                self.offset += probed[clip]
+            else:  # --only 之外、也没有有效缓存的 beat：成片时长按帧数估（和 inspect 一样）
+                self.offset += round(plan.until * self.fps) / self.fps + 1 / self.fps
+                if has_clips:
+                    self.log(f"提醒：{bid} 没有有效缓存，它的时长按帧数估算；片段（clip）的时钟可能和全量渲染差一帧")
+            if chosen:
+                clips.append(clip)
         self._report_lint()
+        self.log(f"beat 缓存：{len(cached)} 段命中，{len(rendered)} 段重渲" + ("" if cache else "（--no-cache）"))
+        info = {"cache": {"cached": cached, "rendered": rendered},
+                "clip_seconds": [probed[c] for c in clips], "beat_info": self.beat_info,
+                "timing_beats": self.timing_beats,
+                "layout_problems": self.problems, "layout_warnings": self.warnings, "stats": self.stats}
+        if only is not None:
+            outputs = []
+            out.parent.mkdir(parents=True, exist_ok=True)
+            for clip in clips:
+                target = out.parent / clip.name
+                tmp = target.with_name(f".{target.name}.tmp")
+                shutil.copyfile(clip, tmp)
+                os.replace(tmp, target)
+                outputs.append(str(target))
+                self.log(f"wrote {target}")
+            return {"out": None, "outputs": outputs, "beats": [c.stem for c in clips], **info}
         playlist = parts / "list.txt"
         playlist.write_text("".join(f"file '{c.resolve()}'\n" for c in clips), encoding="utf-8")
         out.parent.mkdir(parents=True, exist_ok=True)
         subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", str(playlist), "-c", "copy", str(out)], check=True)
-        return {"out": str(out), "seconds": round(probe_seconds(out), 1), "beats": [b["id"] for b in self.doc["beats"]],
-                "clip_seconds": [probe_seconds(c) for c in clips], "beat_info": self.beat_info,
-                "timing_beats": self.timing_beats,
-                "layout_problems": self.problems, "layout_warnings": self.warnings, "stats": self.stats}
+        return {"out": str(out), "seconds": round(probe_seconds(out), 1), "beats": [b["id"] for b in self.doc["beats"]], **info}
 
 
 def _marked(anim: Animation):

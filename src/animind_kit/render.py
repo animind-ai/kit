@@ -212,10 +212,14 @@ def inspect(spec: Path, audio_dir: Path | None, out_dir: Path | None, beats: lis
 
 def render(spec: Path, out: Path, audio_dir: Path | None, quality: str = "l", only: list[str] | None = None, log=print,
            backend: str = "manim", burn_subtitles: bool = False, theme_name: str | None = None,
-           subtitles: str | None = None, lang: str = "zh") -> dict:
+           subtitles: str | None = None, lang: str = "zh", cache: bool = True) -> dict:
     """subtitles：覆盖 style.subtitles（burned / soft / none）；版式（字号下限）也按覆盖后的模式算。
 
     lang：渲染哪种语言的版本（旁白音频要用同一个 lang 合成）；英文版字幕只有英文一行。
+
+    墨线后端按 beat 缓存（beat_cache）：.build-<名>-moxian/parts/<beat>.mp4 + <beat>.hash，内容哈希没变的 beat 不再渲染；
+    cache=False 一律重渲。only 给了就只渲染这些 beat，写成 out 旁边的 <beat>.mp4，不出成片、字幕、章节，
+    也不写 timing-report.json（免得盖掉整支片子的）；时间门禁只查这几个 beat。
     """
     doc = load_spec(spec, lang)
     report = check(doc)
@@ -229,11 +233,27 @@ def render(spec: Path, out: Path, audio_dir: Path | None, quality: str = "l", on
     build = out.parent / f".build-{spec.stem}-{backend}"
     theme = load_theme(theme_name or doc.get("style", {}).get("theme", "paper"))
 
+    if only:
+        unknown = set(only) - {b["id"] for b in doc["beats"]}
+        if unknown:
+            raise SystemExit(f"没有这些 beat：{', '.join(sorted(unknown))}")
+        if backend != "moxian":
+            raise SystemExit("--only 只支持墨线后端（--backend moxian）")
+
     if backend == "moxian":
         from .backends.moxian_backend import MoxianCompiler
 
-        summary = MoxianCompiler(doc, theme, audio_dir, log, quality, spec_dir=spec.parent).render_all(out, build)
+        compiler = MoxianCompiler(doc, theme, audio_dir, log, quality, spec_dir=spec.parent)
+        summary = compiler.render_all(out, build, set(only) if only else None, cache)
         build.mkdir(parents=True, exist_ok=True)
+        if only:
+            summary.pop("beat_info")
+            picked = {k: v for k, v in summary.pop("timing_beats").items() if k in only}
+            subset = {**doc, "beats": [b for b in doc["beats"] if b["id"] in only]}
+            summary["timing_issues"] = timing_gate(subset, picked, None, log)
+            log(f"wrote {', '.join(summary['outputs'])}（--only，没有动 {out.name}）；版式问题 {len(summary['layout_problems'])} 条，"
+                f"时间问题 {len(summary['timing_issues'])} 条")
+            return summary
         info = summary.pop("beat_info")
         summary["timing_issues"] = timing_gate(doc, summary.pop("timing_beats"), out.parent / "timing-report.json", log)
         subs = export_subtitles(doc, out, summary["clip_seconds"], info, theme, burn_subtitles, log)
@@ -255,9 +275,6 @@ def render(spec: Path, out: Path, audio_dir: Path | None, quality: str = "l", on
     beats = doc["beats"]
     names = [b["id"] for b in beats]
     for beat in beats:
-        if only and beat["id"] not in only:
-            # 没重渲的 beat 也要走一遍状态更新，否则后面的 beat 起始画面不对；这里用极低画质快速过一遍
-            pass
         log(f"render {beat['id']}")
         cls = compiler.scene_class(beat)
         with tempconfig({
