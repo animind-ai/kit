@@ -192,7 +192,7 @@ def inspect(spec: Path, audio_dir: Path | None, out_dir: Path | None, beats: lis
     from .backends.moxian_backend import MoxianCompiler
 
     doc = load_spec(spec, lang)
-    report = check(doc)
+    report = check(doc, root=spec.parent)  # 素材根：clip 的 src、data 的 {src} 相对场景文件
     for issue in report.issues:
         log(str(issue))
     if not report.ok:
@@ -222,7 +222,7 @@ def render(spec: Path, out: Path, audio_dir: Path | None, quality: str = "l", on
     也不写 timing-report.json（免得盖掉整支片子的）；时间门禁只查这几个 beat。
     """
     doc = load_spec(spec, lang)
-    report = check(doc)
+    report = check(doc, root=spec.parent)  # 素材根：clip 的 src、data 的 {src} 相对场景文件
     for issue in report.issues:
         log(str(issue))
     if not report.ok:
