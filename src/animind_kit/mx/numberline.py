@@ -353,6 +353,13 @@ class NumberLine(Widget):
     BAR_GAP, BAR_H = 0.3, 0.5  # 分数条在标注下方多远、多高
     label_floor = "label"  # 后端据此把 label_size 抬到这一类的字号下限
 
+    def _sz(self, size: float) -> float:
+        """计数等小字的字号；后端给了 opts["min_text"]（v2 的全局下限换成 kit 字号）时不小于它。"""
+        return max(size, float(self.opts.get("min_text", 0.0)))
+
+    def smallest_text(self) -> float:
+        return min(self._sz(self.COUNT), self.label_size)
+
     def build(self) -> Built:
         d, t = self.definition, self.theme
         if d.get("unit") is not None:  # 0–1 这种短数轴要画得宽，按集指定一个单位的长度
@@ -376,7 +383,7 @@ class NumberLine(Widget):
         self.label_top = -(self.MAJOR + self.LABEL_GAP)
         self.frac_h = mmath(r"\dfrac{8}{8}", self.label_size, t.FG).height
         self.int_h = mmath("8", self.label_size, t.FG).height
-        self.count_h = mmath("8", self.COUNT, t.FG).height
+        self.count_h = mmath("8", self._sz(self.COUNT), t.FG).height
         # 整数标注：有分数标注时和分数的中线对齐，没有时贴着刻度
         self.int_cy = self.label_top - (self.frac_h if self.fractions else self.int_h) / 2
         self.label_bottom = self.label_top - (self.frac_h if self.fractions else self.int_h)
@@ -584,7 +591,7 @@ class NumberLine(Widget):
         for i, (a, b) in enumerate(whole):
             arc = PathNode(path=self.arc(a, b), style=Style(stroke=ink, stroke_width=4, opacity=0.0))
             head_node = PathNode(path=self.arrow_head(a, b), style=Style(stroke=ink, stroke_width=4, opacity=0.0))
-            num = mmath(str(i + 1), self.COUNT, t.ink(num_role)) if numbers else Group()
+            num = mmath(str(i + 1), self._sz(self.COUNT), t.ink(num_role)) if numbers else Group()
             if numbers:
                 num.move_to([(self.x(a) + self.x(b)) / 2, 0.0])
                 num.shift([0.0, self.ARC_BASE + h + 0.08 - num.bbox().y0])
@@ -815,7 +822,7 @@ class NumberLine(Widget):
             x0, x1 = g * size * w, (g + 1) * size * w
             box = PathNode(path=rect(x1 - x0 - 0.08, self.BAR_H + 0.16).transformed(T.translate((x0 + x1) / 2, y)),
                            style=Style(stroke=t.HL_INK, stroke_width=4, opacity=0.0))
-            num = mmath(str(g + 1), self.COUNT, t.HL_INK).move_to([(x0 + x1) / 2, 0.0])
+            num = mmath(str(g + 1), self._sz(self.COUNT), t.HL_INK).move_to([(x0 + x1) / 2, 0.0])
             num.shift([0.0, y - self.BAR_H / 2 - 0.12 - num.bbox().y1])
             num.set_style(opacity=0.0)
             self.groups.add(box, num)

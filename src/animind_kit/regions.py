@@ -52,19 +52,27 @@ LOGO_CORNER = {"v2": (6.2, -3.1)}
 
 
 def regions(top_used: bool = True, side_used: bool = True, footer_used: bool = True,
-            template: str = "default") -> dict[str, Region]:
-    """四个区域。没人用 top / side / footer 时，stage 把那块空间也占上。"""
+            template: str = "default", side_column: bool = False) -> dict[str, Region]:
+    """四个区域。没人用 top / side / footer 时，stage 把那块空间也占上。
+
+    v2 + side_column（场景里 style.side: column）：顶栏只放一行问题句；side 不再并进顶栏，而是主讲区里
+    右边的一栏（宽 SIDE_WIDTH，和 v1 侧栏同宽，上下和 stage 对齐），公式竖排、迷思、多行文字放这里。"""
     w, h = FRAME_WIDTH, FRAME_HEIGHT
     left, right, top, bottom = -w / 2 + MARGIN, w / 2 - MARGIN, h / 2 - MARGIN, -h / 2 + MARGIN
     if template == "v2":
         band = TEMPLATES["v2"]["top"]
-        header = top_used or side_used  # side 就在顶栏里
+        header = top_used or (side_used and not side_column)  # 默认 side 就在顶栏里
         stage_top = top - band - 0.2 if header else top
         stage_bottom = bottom + 1.1 if footer_used else bottom
+        if side_column:
+            stage_right = right - SIDE_WIDTH - 0.2 if side_used else right
+            side = Region("side", right - SIDE_WIDTH, right, stage_bottom, stage_top)
+        else:
+            stage_right, side = right, Region("side", left, right, top - band, top)
         return {
             "top": Region("top", left, right, top - band, top),
-            "stage": Region("stage", left, right, stage_bottom, stage_top),
-            "side": Region("side", left, right, top - band, top),
+            "stage": Region("stage", left, stage_right, stage_bottom, stage_top),
+            "side": side,
             "footer": Region("footer", left, right, bottom, bottom + 1.0),
         }
     band, side = TEMPLATES[template]["top"], TEMPLATES[template]["side"]

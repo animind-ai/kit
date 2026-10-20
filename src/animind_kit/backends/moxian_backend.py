@@ -46,7 +46,7 @@ from .. import analysis, lint, segments, subtitles, timing
 from ..mx import layout, scan, widgets
 from ..mx.readout import Readout
 from ..mx.text import SCALE, mmath, rich, set_fonts
-from ..regions import Region
+from ..regions import FRAME_WIDTH, MARGIN, Region
 from ..theme import Theme
 
 DEFAULT_DUR = {
@@ -194,10 +194,15 @@ class MoxianCompiler:
         self.data = doc.get("data", {})
         style = doc.get("style", {})
         self.template = style.get("layout", "default")  # 分区模板：default | lecture（讲座版式）| v2（培玉规范 v2）
+        self.side_column = self.template == "v2" and style.get("side") == "column"  # v2：side 是主讲区右边一栏，不并进顶栏
         set_fonts(style.get("fonts"), log, LECTURE_FONT_SCALE if self.template == "lecture" else None)  # 建对象之前定下来
         # 场景参数跨 beat 常驻：每个 beat 的时间线从它们当时的值出发补间
         self.params = {k: Param(v, k) for k, v in spec_params.initial(doc).items()}
         self.lifetimes = analysis.lifetimes(doc)
+        # 做过 mark 的对象：底色比目标高 0.16、挂在对象里，v2 顶栏只有 1.0 高，要先留出这块
+        self.marked = {selectors.parse(str(a["target"])).obj
+                       for beat in doc.get("beats") or [] for a in beat.get("do") or []
+                       if isinstance(a, dict) and a.get("act") == "mark" and a.get("target")}
         # 字号下限（数轴标注、侧栏、练一练框）：按成片算，烧录字幕时画面整体缩小，下限相应抬高
         scale = subtitles.picture_scale(subtitles.mode(doc))
         self.logo_check = scale == 1.0  # 烧录字幕时 logo 在画面外的字幕带里，不查右下角
@@ -289,14 +294,24 @@ class MoxianCompiler:
         """
         built = self.objects[obj_id]
         w = built.widget
+        if w is None or getattr(w, "acted", False):
+            return False
+        s = SCALE * self.world_scale(built.node)
+        opts = {k: w.opts[k] for k in ("label_size", "min_text") if k in w.opts}
         kind = getattr(w, "label_floor", None)
-        if w is None or kind is None or getattr(w, "acted", False):
+        if kind is not None:
+            target = self.floors.get(kind, 0.0)
+            em = w.label_size * s
+            if target and em < target - 0.05:
+                opts["label_size"] = w.label_size * target / em * 1.01
+        # v2：组件里最小的字（刻度数字、计数、表头小字……）也守全局下限 font_size 22（渲染画面 40.5px）。
+        # 组件给出 smallest_text()（kit 字号）并接受 opts["min_text"]（把比它小的字抬到它）时才做
+        smallest = getattr(w, "smallest_text", None)
+        if self.template == "v2" and smallest is not None and smallest() * s < self.lint_config.min_font - 0.05:
+            opts["min_text"] = max(float(w.opts.get("min_text", 0.0)), self.lint_config.min_font / s * 1.02)
+        if opts == {k: w.opts[k] for k in ("label_size", "min_text") if k in w.opts}:
             return False
-        target = self.floors.get(kind, 0.0)
-        em = w.label_size * SCALE * self.world_scale(built.node)
-        if not target or em >= target - 0.05:
-            return False
-        fresh = self._build_object(obj_id, built.definition, {"label_size": w.label_size * target / em * 1.01})
+        fresh = self._build_object(obj_id, built.definition, opts)
         fresh.node.font_floor = getattr(built.node, "font_floor", None)
         fresh.node.set_style(opacity=0.0)
         index = next(i for i, n in enumerate(self.root.children) if n is built.node)
@@ -393,7 +408,7 @@ class MoxianCompiler:
     def region(self, obj_id: str) -> Region:
         """对象所在区域。顶上有钉住的对象时，主讲区和侧栏的上沿取它的实际下沿，而不是固定比例。"""
         usage = analysis.usage_for(self.doc, self.lifetimes, obj_id)
-        r = layout.regions(*usage, template=self.template)[self.region_of(obj_id)]
+        r = layout.regions(*usage, template=self.template, side_column=self.side_column)[self.region_of(obj_id)]
         if usage[0] and r.name in ("stage", "side") and self.pinned_floor is not None:
             r = replace(r, y1=self.pinned_floor)
         return r
@@ -454,6 +469,8 @@ class MoxianCompiler:
         factor = self.stack_scale.get(obj_id, 1.0)
         if factor < 1.0:
             built.node.scale(factor)
+        if self.template == "v2" and region.name == "top" and obj_id in self.marked:
+            layout.fit(built.node, region, max_height=(region.height * 0.96 - 0.16) / region.height)
         below = 0.0
         relative = any(k in d for k in ("below", "above", "left_of", "right_of", "over", "within", "pin", "at"))
         if not relative:
@@ -923,6 +940,8 @@ class MoxianCompiler:
 
         def setup() -> None:
             box = self.wbox(node)
+            if self.template == "v2" and node is not built.node:
+                box = self._grow_past_text(box, built.node)
             frame.path = rounded_rect(box.width + 0.16, box.height + 0.16, 0.08)
             frame.matrix = np.eye(3)
             frame.move_to(box.center)
@@ -935,6 +954,29 @@ class MoxianCompiler:
         anims.append(_Overlay(fade_in(frame, DEFAULT_DUR["focus"]), setup))
         anims += [Restyle(s, DEFAULT_DUR["focus"], opacity=0.45) for s in siblings]
         return anims
+
+    def _grow_past_text(self, box: BBox, root: Node) -> BBox:
+        """v2：框住组件的一部分（例如数轴的一格）时，框线不穿过旁边的字（格两端的刻度数字）：
+        和框线相交的字整个框进来，几轮到不再相交为止。"""
+        texts: list[BBox] = []
+        stack = [root]
+        while stack:
+            n = stack.pop()
+            if isinstance(n, (Text, Tex)):
+                if n.style.opacity > 0 and (b := self.wbox(n)) is not None:
+                    texts.append(b)
+                continue
+            stack.extend(n.children)
+        for _ in range(4):
+            x0, x1, y0, y1 = box.x0 - 0.08, box.x1 + 0.08, box.y0 - 0.08, box.y1 + 0.08
+            hit = [b for b in texts
+                   if b.x0 < x1 and b.x1 > x0 and b.y0 < y1 and b.y1 > y0
+                   and not (b.x0 >= x0 and b.x1 <= x1 and b.y0 >= y0 and b.y1 <= y1)]
+            if not hit:
+                break
+            for b in hit:
+                box = box.union(b)
+        return box
 
     def _unfocus(self, obj_id: str, fade: bool = True) -> list[Animation]:
         built = self.objects[obj_id]
@@ -994,6 +1036,8 @@ class MoxianCompiler:
                 size = min(0.5, max(0.25, box.height * 0.7))
                 whole = self.wbox(self.objects[selectors.parse(target).obj].node)  # ✗ 放在整个对象右边，不压住句末的问号
                 x = max(box.x1, whole.x1) + 0.18
+                if x + size > FRAME_WIDTH / 2 - MARGIN:  # 右边没地方（对象贴着侧栏右沿）：✗ 放到对象左边
+                    x = min(box.x0, whole.x0) - 0.18 - size
                 deco.path = (line(box.x0 - 0.04, y, box.x1 + 0.04, y)
                              .extend(line(x, y - size / 2, x + size, y + size / 2))
                              .extend(line(x, y + size / 2, x + size, y - size / 2)))

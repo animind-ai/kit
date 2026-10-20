@@ -59,6 +59,7 @@ SAMPLES = 600  # 找定义域、找出框位置时的采样数
 CLEAR = 0.04  # 文字离线至少这么远（画面单位）
 AROUND = [math.pi * k / 8 for k in range(16)]  # 点的名字找空位时试的方向
 REACH = (1.0, 1.5, 2.1)  # …… 和距离（名字中心离点的距离的倍数）
+REACH_FAR = (2.8, 3.6)  # v2 抬大字号后近处都放不下时再试的距离
 LABEL_DIRS = {
     "u": (0.0, 1.0), "d": (0.0, -1.0), "l": (-1.0, 0.0), "r": (1.0, 0.0),
     "ul": (-0.7, 0.7), "ur": (0.7, 0.7), "dl": (-0.7, -0.7), "dr": (0.7, -0.7),
@@ -347,6 +348,13 @@ class Graph(Widget):
     LABEL = 30
     TICK = 0.09
 
+    def _sz(self, size: float) -> float:
+        """字号；后端给了 opts["min_text"]（v2 的全局下限换成 kit 字号）时不小于它。"""
+        return max(size, float(self.opts.get("min_text", 0.0)))
+
+    def smallest_text(self) -> float:
+        return self._sz(self.LABEL * 0.8)
+
     def build(self) -> Built:
         d, t = self.definition, self.theme
         self.xr = [float(v) for v in d["x"]]
@@ -556,12 +564,18 @@ class Graph(Widget):
         ]
         if labels:
             rise = by - ay
-            size = self.LABEL * 0.9
+            size = self._sz(self.LABEL * 0.9)
             lab_run = number(run, size, ink, trimmed=True)
             b = lab_run.bbox()
             below = rise >= 0  # 横边在三角形下沿时标在下面，否则标在上面
             cx, cy = self._s((ax + bx) / 2, ay)
-            lab_run.shift([cx - b.center[0], cy - (b.y1 + 0.12 if below else b.y0 - 0.12)])
+            dx = cx - b.center[0]
+            if self.opts.get("min_text") and b.width + 0.12 > abs(run) * self.u:
+                # v2 抬大了字号、横边又短（run 很小）：数字比横边宽，居中会伸到 P 的另一侧被直线穿过；
+                # 改成从 P 这一端往 run 的方向排（直线在 P 的另一侧）
+                start = ax * self.u + (0.06 if run >= 0 else -0.06)
+                dx = (start - b.x0) if run >= 0 else (start - b.x1)
+            lab_run.shift([dx, cy - (b.y1 + 0.12 if below else b.y0 - 0.12)])
             lab_rise = number(rise, size, ink, trimmed=True)
             b = lab_rise.bbox()
             sx, sy = self._s(bx, (ay + by) / 2)
@@ -600,9 +614,9 @@ class Graph(Widget):
         g.add(self._keep(self._s(ax_x, y1), PathNode(path=polygon([(0, a), (a * 0.55, -a * 0.6), (-a * 0.55, -a * 0.6)]),
                                                       style=Style(fill=t.DIM))))
         if axis_labels:
-            lx = mmath(axis_labels[0], self.LABEL, t.DIM)
+            lx = mmath(axis_labels[0], self._sz(self.LABEL), t.DIM)
             lx.move_to([0.0, 0.0]).shift([0.12 + lx.width / 2, -0.28])
-            ly = mmath(axis_labels[1], self.LABEL, t.DIM)
+            ly = mmath(axis_labels[1], self._sz(self.LABEL), t.DIM)
             ly.move_to([0.0, 0.0]).shift([-0.3, 0.05 + ly.height / 2])
             g.add(self._keep(self._s(x1, ax_y), lx), self._keep(self._s(ax_x, y1), ly))
         if ticks:
@@ -618,7 +632,7 @@ class Graph(Widget):
                     mark = line(0, -self.TICK, 0, self.TICK) if axis == "x" else line(-self.TICK, 0, self.TICK, 0)
                     kids: list[Node] = [PathNode(path=mark, style=style)]
                     if tick_labels:
-                        lab = mmath(f"{v:g}", self.LABEL * 0.8, t.DIM)
+                        lab = mmath(f"{v:g}", self._sz(self.LABEL * 0.8), t.DIM)
                         lab.move_to([0.0, -0.32] if axis == "x" else [-0.3, 0.0])
                         kids.append(lab)
                     slot = self._keep(pos, *kids)
@@ -633,7 +647,7 @@ class Graph(Widget):
         runs = visible_runs(f, float(dom[0]), float(dom[1]), y0, y1)
         x = runs[-1][1] if runs else float(dom[1])
         y = f(x)
-        lab = mmath(tex, self.LABEL, color)
+        lab = mmath(tex, self._sz(self.LABEL), color)
         right = np.array([0.15 + lab.width / 2, -0.05])
         if y > y1 - 0.08 * (y1 - y0):  # 顶到上沿：名字放在线的右下
             right[1] -= 0.35
@@ -662,7 +676,7 @@ class Graph(Widget):
         kids: list[Node] = [dot]
         lab = None
         if label:
-            lab = mmath(label, self.LABEL, color)
+            lab = mmath(label, self._sz(self.LABEL), color)
             v = np.array(LABEL_DIRS[direction] if isinstance(direction, str) else direction, dtype=float)
             v /= np.linalg.norm(v)
             lab.move_to(v * self._reach(lab, v))
@@ -761,6 +775,17 @@ class Graph(Widget):
                     if clear(self._box(lab, g.matrix), taken):
                         best = (cost, v * self._reach(lab, v) * f)
                         break
+            if best is None and self.opts.get("min_text"):
+                # v2 抬大了字号：几条线交在点上（|x| 的尖点、两条割线、坐标轴）时近处的空当放不下，再往远处找
+                for f in REACH_FAR:
+                    for angle in [m["angle"]] + AROUND:
+                        v = np.array([math.cos(angle), math.sin(angle)])
+                        lab.move_to(v * self._reach(lab, v) * f)
+                        if clear(self._box(lab, g.matrix), taken):
+                            best = (0.0, v * self._reach(lab, v) * f)
+                            break
+                    if best is not None:
+                        break
             v = np.array([math.cos(m["angle"]), math.sin(m["angle"])])
             lab.move_to(best[1] if best else v * self._reach(lab, v))
             taken.append(self._box(lab, g.matrix))
@@ -791,7 +816,7 @@ class Graph(Widget):
         key = (i, text)
         node = cache.get(key)
         if node is None:
-            node = mtext(text.replace("-", "−"), 24, color)
+            node = mtext(text.replace("-", "−"), self._sz(24), color)
             b = node.bbox()
             node.shift([-b.x0, -b.y1])  # 左上角对齐到读数的位置
             if len(cache) < 2000:

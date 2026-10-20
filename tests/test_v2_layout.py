@@ -44,3 +44,34 @@ def test_v2_logo_corner_checked():
 def test_v2_min_font_is_render_size():
     from animind_kit.backends import moxian_backend as mb
     assert mb.V2_MIN_FONT == 40.5
+
+
+def test_v2_side_column():
+    r = R.regions(top_used=True, side_used=True, footer_used=False, template="v2", side_column=True)
+    stage, side, top = r["stage"], r["side"], r["top"]
+    assert abs(side.width - R.SIDE_WIDTH) < 1e-9 and abs(side.x1 - stage.x1 - R.SIDE_WIDTH - 0.2) < 1e-9
+    assert side.y1 == stage.y1 == top.y0 - 0.2 and side.y0 == stage.y0
+    # 没有 side 对象时 stage 仍占满宽度；默认（不开 side_column）side 仍是顶栏
+    assert R.regions(side_used=False, template="v2", side_column=True)["stage"].width == R.FRAME_WIDTH - 2 * R.MARGIN
+    assert R.regions(template="v2")["side"] == R.Region("side", top.x0, top.x1, top.y0, top.y1)
+    # 只有 side、没有顶栏：stage 和 side 一直到安全区顶
+    r2 = R.regions(top_used=False, side_used=True, footer_used=False, template="v2", side_column=True)
+    assert abs(r2["stage"].y1 - (R.FRAME_HEIGHT / 2 - R.MARGIN)) < 1e-9
+
+
+def test_v2_widget_min_text():
+    """v2 后端给组件 opts["min_text"]：组件里比它小的字（计数、刻度、表头小字）抬到它；不给时字号不变（v1 不受影响）。"""
+    from animind_kit.mx.numberline import NumberLine
+    from animind_kit.mx.widgets import DiffTable
+    from animind_kit import theme
+
+    t = theme.theme("paper")
+    line = {"widget": "number_line", "range": [0, 6], "parts": 1, "role": "A"}
+    plain = NumberLine("line", line, t, {})
+    assert plain.smallest_text() == min(NumberLine.COUNT, plain.label_size)
+    raised = NumberLine("line", line, t, {}, opts={"min_text": 45.0})
+    assert raised.smallest_text() == min(45.0, raised.label_size)
+    table = {"widget": "diff_table", "rows": [{"data": "sq", "role": "A", "name": "位置"}]}
+    data = {"sq": [1, 4, 9]}
+    assert DiffTable("tab", table, t, data).smallest_text() == 17
+    assert DiffTable("tab", table, t, data, opts={"min_text": 30.0}).smallest_text() == 30.0
