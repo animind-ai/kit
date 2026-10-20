@@ -32,6 +32,7 @@ from moxian.anim import (
 from moxian.anim.camera import focus_on
 from moxian.anim.camera import reset as camera_reset
 from moxian.anim.timeline import Timeline
+from moxian.clip import ClipNode
 from moxian.core import BBox, Camera, Group, Node, PathNode, Style, parent_matrix_of
 from moxian.encode import render_video
 from moxian.path import Path as VPath
@@ -190,8 +191,10 @@ def probe_seconds(path: Path) -> float:
 
 
 class MoxianCompiler:
-    def __init__(self, doc: dict, theme: Theme, audio_dir: Path | None, log=print, quality: str = "l"):
+    def __init__(self, doc: dict, theme: Theme, audio_dir: Path | None, log=print, quality: str = "l",
+                 spec_dir: Path | None = None):
         self.doc, self.t, self.audio_dir, self.log = doc, theme, audio_dir, log
+        self.spec_dir = spec_dir or Path(".")  # clip 的 src 相对场景文件所在目录
         self.width, self.height, self.fps = SIZES[quality]
         self.data = doc.get("data", {})
         # 场景参数跨 beat 常驻：每个 beat 的时间线从它们当时的值出发补间
@@ -203,6 +206,9 @@ class MoxianCompiler:
         self.pinned_floor: float | None = None
         self.root = Group(name="root")
         self.camera = Camera()  # 跨 beat 常驻；没用 camera 动作时是原样，渲染逐像素不变
+        self.clip_offset: dict[str, float] = {}  # 片段的 start（show 之后再推迟多久开始播）
+        self.clip_t0: dict[str, float] = {}  # 片段在整支片子里开始播的时刻（秒），第一次 show 时定
+        self.timing_beats: dict[str, dict] = {}  # 时间报告：每个 beat 的句子时刻和带 at 的动作批次
         self.objects: dict[str, Built] = {}
         for obj_id, definition in doc.get("objects", {}).items():
             built = self.build_object(obj_id, definition)
@@ -272,7 +278,45 @@ class MoxianCompiler:
             return Built(mmath(r"\displaystyle " + definition["tex"], max(40 * level, floor), t.ink(role)), definition)
         if kind == "readout":
             return Built(Readout(definition, t, self.params, max(36 * level, floor)).node, definition)
+        if kind == "clip":
+            return Built(self._build_clip(obj_id, definition), definition)
         raise NotImplementedError(f"kit（墨线）0.1 还不支持 type: {kind}（对象 {obj_id}）")
+
+    def _is_clip(self, obj_id: str) -> bool:
+        return self.doc.get("objects", {}).get(obj_id, {}).get("type") == "clip"
+
+    def _build_clip(self, obj_id: str, d: dict) -> ClipNode:
+        """type: clip：外部画面（视频或帧序列）当底板，z 默认 -1 垫在矢量对象下面。
+
+        src 相对场景文件所在目录。muted 只能是 true（素材音轨不参与合成）。start 不在这里定：
+        见 _sync_clips，它在片段第一次 show 时换算成整支片子里的时刻。
+        """
+        if d.get("muted", True) is not True:
+            raise ValueError(f"{obj_id}：clip 的 muted 只能为 true（素材音轨不参与合成）")
+        path = (self.spec_dir / d["src"]).resolve()
+        if not path.exists():
+            raise FileNotFoundError(f"{obj_id}：找不到素材 {d['src']}（相对 {self.spec_dir}）")
+        trim = d.get("trim") or {}
+        self.clip_offset[obj_id] = float(d.get("start", 0.0))
+        return ClipNode(
+            str(path), kind=d.get("kind"), fps=d.get("fps"),
+            t_in=float(trim.get("in", 0.0)), t_out=None if trim.get("out") is None else float(trim["out"]),
+            rate=float(d.get("rate", 1.0)), fit=d.get("fit", "contain"), opacity=float(d.get("opacity", 1.0)),
+            end=d.get("end", "hold"), z=float(d.get("z", -1.0)), name=obj_id,
+        )
+
+    def _place_clip(self, obj_id: str, built: Built) -> Node:
+        """底板：在区域（in）里铺满；size 的 max_width / max_height 是区域的比例（缺省 1）。之后和别的对象一样摆（below 等）。"""
+        d = built.definition
+        region = self.region(obj_id)
+        size = d.get("size") or {}
+        w = region.width * float(size.get("max_width", 1.0))
+        h = region.height * float(size.get("max_height", 1.0))
+        built.node.plate = BBox(-w / 2, -h / 2, w / 2, h / 2)
+        refs = {key: self.wbox(self.resolve(d[key], place=True)) for key in analysis.LAYOUT_REFS if key in d}
+        layout.place(built.node, {**d, "size": {"max_width": 1.0, "max_height": 1.0}}, refs, region)
+        built.placed = True
+        return built.node
 
     def _raise_labels(self, obj_id: str) -> bool:
         """排版后组件的标注字号低于下限（组件被缩小了）：按实际缩放加大 label_size 重建组件，返回是否重建了。
@@ -433,6 +477,8 @@ class MoxianCompiler:
         if built.placed:
             return built.node
         d = built.definition
+        if d.get("type") == "clip":
+            return self._place_clip(obj_id, built)
         refs: dict[str, BBox] = {}
         for key in analysis.LAYOUT_REFS:
             if key in d:
@@ -495,6 +541,8 @@ class MoxianCompiler:
         snapshots: list[tuple[float, dict[str, Node]]] = [(-1.0, dict(self.visible))]  # 每批动作之后谁在画面上
         ends: list[tuple[float, str]] = []  # (逻辑时刻, 来源)
         marked: dict[int, tuple[frozenset[str] | None, str]] = {}  # 标了中途采样的动画 → (它在变的对象, 来源)
+        cue_actions: list[dict] = []  # 时间报告：每个带 at 的动作批次，画面实际开始 vs 书签
+        clip_shows: list[tuple[str, float]] = []  # 片段被 show 的逻辑时刻，定好时间线之后换成视频时刻
         prev_end = 0.0
         actions = beat.get("do", [])
         i = 0
@@ -511,6 +559,7 @@ class MoxianCompiler:
                 if start - want > CUE_LATE and want > 0.5:
                     self.stats["cue_late"] += 1
                     self.log(f"CUE LATE {beat['id']}[{head['at']}] 画面比旁白晚 {start - want:.1f}s")
+                cue_actions.append({"at": head["at"], "want": round(want, 3), "start": round(start, 3)})
             else:
                 start = prev_end
             next_at = self._next_at(actions, j, bt)
@@ -521,6 +570,8 @@ class MoxianCompiler:
             source = f"do[{i}] {head['act']}{cue}"
             for n, action in enumerate(batch):
                 self.stats["actions"] += 1
+                if action["act"] == "show" and self._is_clip(selectors.parse(action["target"]).obj):
+                    clip_shows.append((selectors.parse(action["target"]).obj, start))
                 if action["act"] == "step":
                     ref = str(action.get("at", "after" if "after" in action else "with"))
                     self.freezes.append(segments.Freeze(start, spec_segments.step_hold(self.doc, action), ref))
@@ -551,6 +602,7 @@ class MoxianCompiler:
             inner.add(start, anim)
         freezes, self.freezes = self.freezes, []
         tl = segments.Warped(inner, freezes)
+        self._sync_clips(clip_shows, tl.freezes)
         narration = self.audio_dir / f"{beat['id']}.wav" if self.audio_dir else None
         if narration is not None and not narration.exists():
             narration = None
@@ -571,6 +623,11 @@ class MoxianCompiler:
             "steps": [{"time": round(t, 3), "hold": f.hold, "at": f.ref}
                       for f, t in zip(sorted(freezes, key=lambda f: f.at), segments.freeze_starts(freezes))],
         }
+        # 时间报告用旁白的音频时钟（不乘 freezes），和 CUE LATE 的算法一致；cues 是句子的原始时刻，scene-spec 据此查句间静音
+        self.timing_beats[beat["id"]] = {
+            "cues": [{"start": round(s.start, 3), "end": round(s.end, 3)} for s in bt.sentences],
+            "actions": cue_actions,
+        }
         # 暂停（预测、想一想）接在旁白之后：画面定住 hold 秒，音轨补同样长的静音
         hold = float(beat["pause"].get("hold", 2)) if "pause" in beat else 0.0
         until = max(spoken + hold, tl.end + 0.3, 1.0)
@@ -584,6 +641,19 @@ class MoxianCompiler:
         samples.append(_Sample(last, "结束"))
         samples += self._mid_samples(inner, marked, frame, {s.time for s in samples})
         return _Plan(inner, tl, narration, until, snapshots, sorted(samples, key=lambda s: s.time))
+
+    def _sync_clips(self, clip_shows: list[tuple[str, float]], freezes) -> None:
+        """片段的 start 换成这个 beat 的时钟（renderer.time 每个 beat 都从 0 起）。
+
+        片段第一次 show 时记下它在整支片子里的开始时刻：beat 起点 + show 的视频时刻 + 场景里的 start（show 之后再推迟多久）。
+        之后每个 beat 都减去自己的起点，所以片段跨 beat 接着播，不会每个 beat 从头播。
+        show 之后隐藏、再显示，不重新开始（片段一直在播，隐藏时只是不画）。start 为负表示这个 beat 开始时它已经在播。
+        """
+        for obj, logical in clip_shows:
+            if obj not in self.clip_t0:
+                self.clip_t0[obj] = self.offset + segments.to_video(logical, freezes) + self.clip_offset[obj]
+        for obj, t0 in self.clip_t0.items():
+            self.objects[obj].node.start = t0 - self.offset
 
     def _mid_samples(self, inner: Timeline, marked: dict[int, tuple[frozenset[str] | None, str]],
                      frame: Callable[[float], float], rest: set[float]) -> list[_Sample]:
@@ -669,12 +739,12 @@ class MoxianCompiler:
         else:
             self.mid_lint_at(beat_id, sample)
 
-    def _lint_now(self, labels: dict[int, scan.Label]) -> list[lint.Problem]:
-        things = scan.scan(self.root, labels, self.camera, self.lint_config.min_opacity)
+    def _lint_now(self, labels: dict[int, scan.Label], time: float) -> list[lint.Problem]:
+        things = scan.scan(self.root, labels, self.camera, self.lint_config.min_opacity, time)
         return lint.check(things, self.lint_config, self.allow, self.ignore_pairs, framed=not self.camera.is_identity())
 
     def lint_at(self, beat_id: str, sample: _Sample) -> list[tuple[int, lint.Problem]]:
-        problems = self._lint_now(self.labels())
+        problems = self._lint_now(self.labels(), sample.time)
         moment = lint.Moment(beat_id, sample.time, sample.source, self.offset + sample.time)
         self.rest_seen |= {(beat_id, p.ident()) for p in problems}
         return self.tracker.see(moment, problems)
@@ -682,7 +752,7 @@ class MoxianCompiler:
     def mid_lint_at(self, beat_id: str, sample: _Sample) -> None:
         """中途采样：只看 MID_ERRORS / MID_WARNINGS 里的几类、只看牵涉到正在变的对象的问题，先记下，beat 播完再定。"""
         labels = self.labels()
-        problems = [p for p in self._lint_now(labels) if p.kind in MID_ERRORS + MID_WARNINGS]
+        problems = [p for p in self._lint_now(labels, sample.time) if p.kind in MID_ERRORS + MID_WARNINGS]
         if sample.objs is not None:
             obj_of = {lab.owner: lab.obj for lab in labels.values()}
             problems = [p for p in problems if obj_of.get(p.subject) in sample.objs
@@ -737,6 +807,7 @@ class MoxianCompiler:
                     self.mid_lint_at(beat["id"], sample)
                     continue
                 marks = self.lint_at(beat["id"], sample)
+                renderer.time = sample.time  # 和 render_beat 同一个时钟：片段取这一刻的帧
                 if sheets is not None:
                     caption = f"#{len(cells)} {beat['id']} t={sample.time:.2f}s  {sample.source}"
                     cells.append(storyboard.Cell(renderer.render(self.root), caption, marks))
@@ -827,6 +898,8 @@ class MoxianCompiler:
         if act == "show":
             sel = selectors.parse(action["target"])
             node = self.resolve(action["target"], place=True)
+            if self._is_clip(sel.obj):  # 片段是底板：淡入即可，不进 visible（版式求解不看它；lint 在扫描时看到它）
+                return [fade_in(node, DEFAULT_DUR["show"])], DEFAULT_DUR["show"]
             style = action.get("style", "fade")
             dur = 1.0 if style == "write" else DEFAULT_DUR["show"]
             if sel.span is None and sel.part is None and sel.index is None:
@@ -847,6 +920,8 @@ class MoxianCompiler:
             node = self.resolve(action["target"])
             if sel.span is not None or sel.part is not None or sel.index is not None:
                 return [fade_out(n, DEFAULT_DUR["hide"]) for n in self._members(node)], DEFAULT_DUR["hide"]
+            if self._is_clip(sel.obj):
+                return [fade_out(node, DEFAULT_DUR["hide"])], DEFAULT_DUR["hide"]
             extras = self._drop_overlays(sel.obj)
             self.visible.pop(sel.obj, None)
             return ([fade_out(node, DEFAULT_DUR["hide"])] + [self._overlay_out(e, DEFAULT_DUR["hide"]) for e in extras]
@@ -1132,6 +1207,7 @@ class MoxianCompiler:
         subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", str(playlist), "-c", "copy", str(out)], check=True)
         return {"out": str(out), "seconds": round(probe_seconds(out), 1), "beats": [b["id"] for b in self.doc["beats"]],
                 "clip_seconds": [probe_seconds(c) for c in clips], "beat_info": self.beat_info,
+                "timing_beats": self.timing_beats,
                 "layout_problems": self.problems, "layout_warnings": self.warnings, "stats": self.stats}
 
 

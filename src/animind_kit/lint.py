@@ -297,7 +297,8 @@ def check(things: list[Thing], config: Config | None = None, allow: Allow | None
                 continue  # 标记底色画在字后面，故意比目标宽一点，压到邻字边缘不算
             if allow.pair(s.obj, g.obj, "cross"):
                 continue
-            edged = s.stroked or s.fill >= 0.2
+            # 片段底板（act="plate"）的边是画面的边界，不算线穿过字；字在底板下面的 covered 照常查
+            edged = (s.stroked or s.fill >= 0.2) and s.act != "plate"
             a, b = segs(s)
             if edged and crosses(a, b, near):
                 if s.order < g.order and any(

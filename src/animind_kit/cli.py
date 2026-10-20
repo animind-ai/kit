@@ -1,6 +1,9 @@
 """命令行：
     animind-kit render 场景文件 --out 成片 [--audio 目录] [--quality l|m|h] [--lang en]
     animind-kit inspect 场景文件 [--beat X] [--out 分镜图目录] [--audio 目录] [--lang en]
+
+render 写 成片旁边的 timing-report.json，inspect 写到 --out（默认 build/inspect/<名>）。两者都过 scene-spec 的时间门禁
+（CUE LATE 的 SS480、句间静音 SS487）：有错误就非零退出。regress 不做这个门禁。
 """
 
 from __future__ import annotations
@@ -32,8 +35,9 @@ def main(argv: list[str] | None = None) -> int:
     i = sub.add_parser("inspect", help="不编码视频，逐批动作检查字形级版式问题并出分镜图（墨线后端）")
     i.add_argument("spec", type=Path)
     i.add_argument("--beat", action="append", help="只检查这个 beat（可重复）；其余 beat 照样推演但不检查")
-    i.add_argument("--out", type=Path, help="分镜图目录，默认 build/inspect/<场景名>")
-    i.add_argument("--no-sheets", action="store_true", help="只打印问题，不出分镜图")
+    i.add_argument("--out", type=Path,
+                   help="分镜图和 timing-report.json 的目录，默认 build/inspect/<场景名>")
+    i.add_argument("--no-sheets", action="store_true", help="只打印问题，不出分镜图（timing-report.json 仍写到 --out 或默认目录）")
     i.add_argument("--audio", type=Path, help="旁白目录：用真实时长（没有就按字数估算）")
     i.add_argument("--quality", choices=["l", "m", "h"], default="m", help="和 render 用同一档，采样才落在同一帧")
     for cmd in (r, i):
@@ -62,8 +66,9 @@ def main(argv: list[str] | None = None) -> int:
         from .render import inspect
 
         name = args.spec.name.removesuffix(".yaml").removesuffix(".scene")
-        out = None if args.no_sheets else (args.out or Path("build/inspect") / name)
-        problems = inspect(args.spec, args.audio, out, args.beat, args.quality, lang=args.lang)
+        report_dir = args.out or Path("build/inspect") / name  # timing-report.json 总在这里；分镜图只在没有 --no-sheets 时出
+        out = None if args.no_sheets else report_dir
+        problems = inspect(args.spec, args.audio, out, args.beat, args.quality, lang=args.lang, report_dir=report_dir)
         return 1 if problems else 0
 
     if args.command == "compare":
@@ -77,7 +82,8 @@ def main(argv: list[str] | None = None) -> int:
     summary = render(args.spec, args.out, args.audio, args.quality, backend=args.backend,
                      burn_subtitles=args.burn_subtitles, theme_name=args.theme, subtitles=args.subtitles,
                      lang=args.lang)
-    return 1 if summary["layout_problems"] else 0
+    # 视频照常写出；版式或时间门禁有错就非零退出（时间错误：CUE LATE 的 SS480、句间静音的 SS487、报告格式 SS481）
+    return 1 if summary["layout_problems"] or summary["timing_issues"] else 0
 
 
 if __name__ == "__main__":
