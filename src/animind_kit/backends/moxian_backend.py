@@ -42,6 +42,7 @@ from moxian.path import Path as VPath
 from moxian.path import line, rounded_rect
 from moxian.render import SkiaRenderer
 from moxian.text import Tex, Text
+from scene_spec import curves as spec_curves
 from scene_spec import params as spec_params
 from scene_spec import segments as spec_segments
 from scene_spec import selectors
@@ -202,7 +203,10 @@ class MoxianCompiler:
         self.spec_dir = spec_dir or Path(".")  # clip 的 src 相对场景文件所在目录
         self.quality = quality
         self.width, self.height, self.fps = SIZES[quality]
-        self.data = doc.get("data", {})
+        try:  # data 的 {src} 读成文件里的内容（和 scene-spec 检查读的是同一份）
+            self.data = spec_curves.load_data(doc, self.spec_dir)
+        except spec_curves.DataError as exc:
+            raise SystemExit(f"{exc.code} {exc.message}") from exc
         # 场景参数跨 beat 常驻：每个 beat 的时间线从它们当时的值出发补间
         self.params = {k: Param(v, k) for k, v in spec_params.initial(doc).items()}
         self.lifetimes = analysis.lifetimes(doc)

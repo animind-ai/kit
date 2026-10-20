@@ -30,6 +30,11 @@
 引用参数的表达式（"k*x+1"、"t"）。组件在 moxian 的参数机制上挂一个 updater：参数一变，
 曲线重算贝塞尔、点挪到新位置、三角形和标注重建、割线和切线跟着点走。
 
+数据曲线 plots[i] = {data: 键, progress?, along?, role?, label?}：顶层 data 里的点列 [[x, y], …]（可以是 {src: 文件.json}）
+按顺序连成折线（不裁剪：scene-spec 已经查过每个点都在坐标范围里，SS497）。progress（数或参数表达式，0 到 1，默认 1）
+只画前一部分，补间它时曲线平滑地长出来；along 定 progress 的尺子（length 按弧长、param 按点的序号，见 track.py）。
+名字放在整条数据的最后一个点旁边。点、割线、切线、三角形只能放在函数曲线上（沿数据走的点用 plane 的 curves + points）。
+
 动作：
 - draw {plot: i}：沿曲线画出来；
 - approach {secant: i, h: 目标}：Q 沿曲线滑到 x0+h，h 按几何级数变（1 → 0.1 → 0.01 看起来匀速），
@@ -51,6 +56,7 @@ from ..lint import crosses, segments_of
 from .readout import number
 from .scan import flatten
 from .text import mmath, mtext
+from .track import Track, polyline
 from .widgets import Built, Widget
 
 TOL = 2e-6  # 曲线贝塞尔近似的容许误差（数学单位）；放大 60 倍时远小于一个像素
@@ -373,9 +379,15 @@ class Graph(Widget):
         node.add(axes)
         parts["axes"].append(axes)
 
-        self.fns: list[Function] = []
+        self.fns: list[Function | None] = []  # 数据曲线是 None
         self.point_x = [self._expr(spec["x"]) for spec in d.get("points") or []]
         for i, spec in enumerate(d["plots"]):
+            if "data" in spec:
+                curve, label = self._data_plot(i, spec)
+                parts["plot"].append(curve)
+                parts["plot_label"].append(label)
+                node.add(curve, label)
+                continue
             f = Function(spec["f"], self.params)
             self.used |= f.names
             self.fns.append(f)
@@ -394,6 +406,8 @@ class Graph(Widget):
         self.points: list[tuple[int, float]] = []
         for i, spec in enumerate(d.get("points") or []):
             k, x = int(spec.get("plot", 0)), self.point_x[i][0]()
+            if self.fns[k] is None:
+                raise ValueError(f"graph {self.obj_id}：点 {i} 放在数据曲线 {k} 上（scene-spec 报 SS496）")
             self.points.append((k, x))
             marker, dot = self._marker((x, self.fns[k](x)), spec.get("label"), t.color(spec.get("role"), t.C),
                                        spec.get("label_dir") or self._label_dir(k, x), f"point{i}")
@@ -491,6 +505,21 @@ class Graph(Widget):
         return Built(node, parts=parts, items=items)
 
     # ---- 参数 ----
+
+    def _data_plot(self, i: int, spec: dict) -> tuple[PathNode, Group]:
+        """数据曲线：折线画到 progress；progress 引用参数时挂进 refreshers。"""
+        t = self.theme
+        tr = Track(spec, self.data, self.params)
+        self.fns.append(None)
+        self.used |= tr.names
+        curve = PathNode(path=polyline(tr.drawn(), self.u), style=Style(stroke=t.color(spec.get("role"), t.A), stroke_width=5),
+                         z=2, name=f"plot{i}")
+        label = Group(name=f"plot_label{i}")
+        if spec.get("label"):
+            label = self._end_label(tr.end(), spec["label"], t.ink(spec.get("role", "A")))
+        if tr.names:
+            self.refreshers.append(lambda: setattr(curve, "path", polyline(tr.drawn(), self.u)))
+        return curve, label
 
     def _expr(self, value) -> tuple:
         """数或参数表达式 → (取当前值的函数, 是否依赖参数)。"""
@@ -636,7 +665,12 @@ class Graph(Widget):
         (y0, y1) = self.yr
         runs = visible_runs(f, float(dom[0]), float(dom[1]), y0, y1)
         x = runs[-1][1] if runs else float(dom[1])
-        y = f(x)
+        return self._end_label((x, f(x)), tex, color)
+
+    def _end_label(self, end: tuple[float, float], tex: str, color: str) -> Node:
+        """名字放在曲线末端 end（数学坐标）的旁边。"""
+        (y0, y1) = self.yr
+        x, y = end
         lab = mmath(tex, self.LABEL, color)
         right = np.array([0.15 + lab.width / 2, -0.05])
         if y > y1 - 0.08 * (y1 - y0):  # 顶到上沿：名字放在线的右下

@@ -22,7 +22,17 @@ mesh: true 时另有一层彩色网格（mesh_role，默认 B）跟着 warp 变�
 - relabel {name, label}：换名字（旧的淡出、新的淡入，位置跟着箭头）；
 - remove {name}（一个或列表；不写 = 全部箭头、点、多边形和弧）：淡出。
 
-暴露：axes（坐标轴和刻度，一项）、grid（淡网格）、mesh（彩色网格）、items（画上去的全部东西，一项）。
+预计算的轨迹和参数曲线（定义里写，不是动作；几何见 track.py / scene_spec.curves）：
+- curves: [{data: 键} 或 {x: "x(t)", y: "y(t)", domain: [t0, t1]}, progress（默认 1）, along（length / param）, role（默认 A）]：
+  data 引用顶层 data 里的点列 [[x, y], …]（可以是 {src: 文件.json}），参数曲线在 domain 上等分取样；
+  progress 是数或参数表达式（0 到 1），补间它时轨迹平滑地长出来；
+- points: [{curve: i, at（数或参数表达式，0 到 1）, label, role（默认 HL）, dir}]：沿第 i 条曲线走的点，
+  at 和 progress 用同一把尺子，写同一个参数时点就在轨迹的头上。
+参数一变，曲线和点按参数的当前值重画（updater，补间时中途采样的版式检查也看得到）。曲线不跟着整体
+rotate / scale / warp / reset 变换（scene-spec 报 SS496）。
+
+暴露：axes（坐标轴和刻度，一项）、grid（淡网格）、mesh（彩色网格）、items（画上去的全部东西，一项）、
+curve（第 i 条曲线）、point（第 i 个沿曲线走的点，含名字）。
 
 文字（刻度、名字）都垫一块底色：网格线从字底下过，不会穿过字（inspect 不报 cross）。
 刻度和名字标了 font_floor = "label"，后端排版后按实际缩放把 label_size 抬到字号下限（同数轴）。
@@ -36,7 +46,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import numpy as np
-from moxian.anim import Animation, Draw, easing
+from moxian.anim import Animation, Draw, easing, updater
 from moxian.core import Group, Node, PathNode, Style
 from moxian.core import transform as T
 from moxian.path import Path, circle, polygon, rounded_rect
@@ -44,6 +54,7 @@ from moxian.path import Path, circle, polygon, rounded_rect
 from .dissect import dashed
 from .dots import FadeTo, reserve
 from .text import mmath, rich
+from .track import Track, polyline, scalar
 from .widgets import Built, Widget
 
 UNIT = 1.0  # 一个单位的长度（画面单位，排版前）
@@ -52,6 +63,7 @@ HEAD_W = 0.13  # 箭头尖的半宽
 VEC_W = 6  # 箭杆粗细（1080p 像素）
 DOT = 0.1  # 点的半径
 PAD = 0.06  # 文字底色比字大出的边
+MOVER_REACH = (1.0, 1.8)  # 沿曲线走的点的名字躲刻度时试的距离（倍数）
 LABEL_GAP = 0.32  # 箭头名字离箭杆中点的距离
 LABEL_DIRS = {
     "u": (0.0, 1.0), "d": (0.0, -1.0), "l": (-1.0, 0.0), "r": (1.0, 0.0),
@@ -186,10 +198,76 @@ class Plane(Widget):
         node.add(reserve(box_r - box_l, box_t - box_b, (box_l + box_r) / 2, (box_b + box_t) / 2))
         self.layer = Group(name="items")
         self.labels = Group(name="labels")  # 名字画在所有箭头上面
-        node.add(self.grid, self.mesh, self.axes, self.layer, self.labels)
+        curves, movers = self.build_tracks()
+        # 曲线垫在坐标轴下面（从刻度的底色下面过，不穿过字）；沿曲线走的点在箭头上面、名字下面
+        node.add(self.grid, self.mesh, Group(*curves, name="curves"), self.axes, self.layer, Group(*movers, name="movers"),
+                 self.labels)
         self.items: dict[str, Item] = {}
+        if self.track_params:
+            updater(node, lambda _n: self.paint_tracks(), *(self.params[n] for n in sorted(self.track_params)))
         return Built(node, parts={"axes": [self.axes], "grid": [self.grid], "mesh": [self.mesh],
-                                  "items": [self.layer]})
+                                  "items": [self.layer], "curve": curves, "point": movers})
+
+    # ---------- 轨迹 ----------
+
+    def build_tracks(self) -> tuple[list[PathNode], list[Group]]:
+        """curves 和沿曲线走的 points：节点先建好，几何由 paint_tracks 按参数的当前值画。"""
+        d, t = self.definition, self.theme
+        self.tracks: list[tuple[Track, PathNode]] = []
+        self.track_params: set[str] = set()
+        for i, spec in enumerate(d.get("curves") or []):
+            tr = Track(spec, self.data, self.params)
+            self.track_params |= tr.names
+            curve = PathNode(path=Path(), style=Style(stroke=t.color(spec.get("role"), t.A), stroke_width=5), name=f"curve{i}")
+            self.tracks.append((tr, curve))
+        self.movers: list[tuple[Item, Callable[[], float]]] = []
+        for i, spec in enumerate(d.get("points") or []):
+            role = spec.get("role")
+            dot = PathNode(path=circle(DOT), style=Style(fill=t.color(role, t.HL_INK)))
+            lab = None
+            if spec.get("label"):
+                lab = self.label_node(spec["label"], t.ink(role or "HL"))
+            node = Group(Group(dot), *([lab] if lab is not None else []), name=f"point{i}")
+            at, names = scalar(spec["at"], self.params)
+            self.track_params |= names
+            item = Item("point", f"point{i}", np.zeros((1, 2)), node, lab, dir=LABEL_DIRS[spec.get("dir", "ur")],
+                        extra={"curve": int(spec["curve"])})
+            self.movers.append((item, at))
+        # 刻度和轴名的包围盒（平面坐标）：点走到它们旁边时名字换个方向，不压在刻度上
+        self.text_boxes = [b for g in self.axes.children if isinstance(g, Group) and (b := g.bbox()) is not None]
+        self.paint_tracks()
+        return [c for _tr, c in self.tracks], [item.node for item, _at in self.movers]
+
+    def paint_tracks(self) -> None:
+        """按参数的当前值重画：曲线画到 progress，点挪到 at。"""
+        for tr, curve in self.tracks:
+            curve.path = polyline(tr.drawn(), UNIT)
+        for item, at in self.movers:
+            item.pts = np.array([self.tracks[item.extra["curve"]][0].at(at())], dtype=float)
+            self.paint(item, item.pts, None)
+            if item.label is not None:
+                self.place_mover_label(item)
+
+    def place_mover_label(self, item: Item) -> None:
+        """名字先放在 dir 那一边；压到刻度时按离 dir 的角度由近到远试其余方向，再试远一档；
+        都压到就放在压得最少的地方。"""
+        want = item.extra.setdefault("dir", item.dir)
+        a0 = math.atan2(want[1], want[0])
+        order = sorted(LABEL_DIRS.values(), key=lambda v: abs((math.atan2(v[1], v[0]) - a0 + math.pi) % (2 * math.pi) - math.pi))
+        best = None
+        for reach in MOVER_REACH:
+            for d in order:
+                item.dir, item.extra["reach"] = d, reach
+                self.place_label(item, item.pts, item.label)
+                box = item.label.bbox()
+                hit = sum(max(0.0, min(box.x1, b.x1) - max(box.x0, b.x0) + 2 * PAD)
+                          * max(0.0, min(box.y1, b.y1) - max(box.y0, b.y0) + 2 * PAD) for b in self.text_boxes)
+                if hit == 0.0:
+                    return
+                if best is None or hit < best[0]:
+                    best = (hit, d, reach)
+        item.dir, item.extra["reach"] = best[1], best[2]
+        self.place_label(item, item.pts, item.label)
 
     # ---------- 文字 ----------
 
@@ -272,7 +350,7 @@ class Plane(Widget):
         elif item.kind == "point":
             d = np.array(item.dir)
             half = np.array([lab.width, lab.height]) / 2
-            reach = DOT + 0.08 + float(np.dot(np.abs(d), half)) / max(1e-6, float(np.linalg.norm(d)))
+            reach = (DOT + 0.08 + float(np.dot(np.abs(d), half)) / max(1e-6, float(np.linalg.norm(d)))) * item.extra.get("reach", 1.0)
             lab.matrix = T.translate(*(P[0] + d / np.linalg.norm(d) * reach))
 
     def paint_mesh(self, m: np.ndarray) -> None:

@@ -266,6 +266,38 @@ def test_clip_asset_change_invalidates(tmp_path, calls):
     assert calls == ["One", "Two", "Three"]
 
 
+DATA = """\
+spec: "0.1"
+meta: {id: datacache, title: 数据, line: worked, author: t, license: CC-BY-4.0}
+pedagogy: {insight: 轨迹, status: method}
+style: {theme: paper, subtitles: none}
+params: {p: {value: 0, min: 0, max: 1}}
+data: {traj: {src: traj.json}}
+objects:
+  w: {widget: plane, x: [-2, 2], y: [-2, 2], curves: [{data: traj, progress: p}], in: stage}
+beats:
+  - id: One
+    say: [{id: s1, pace: normal, text: "开始。"}]
+    do: [{at: s1, act: show, target: w}]
+  - id: Two
+    say: [{id: s1, pace: normal, text: "画出来。"}]
+    do: [{at: s1, act: tween, args: {p: 1}}]
+"""
+
+
+def test_data_src_change_invalidates(tmp_path, calls):
+    """data 的 {src} 指向的 JSON 改了：用到它的画面全部重渲（键里有文件内容的哈希）；没改就全部命中。"""
+    (tmp_path / "traj.json").write_text(json.dumps([[0, 0], [1, 1], [1, -1]]))
+    spec = write(tmp_path, DATA, "datacache")
+    run(spec, tmp_path / "d.mp4")
+    calls.clear()
+    run(spec, tmp_path / "d.mp4")
+    assert calls == []
+    (tmp_path / "traj.json").write_text(json.dumps([[0, 0], [-1, 1], [1, -1]]))
+    run(spec, tmp_path / "d.mp4")
+    assert calls == ["One", "Two"]
+
+
 def test_scene_state_sees_geometry_changes():
     from moxian.core import Camera, Group, PathNode
     from moxian.path import rounded_rect
