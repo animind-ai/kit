@@ -276,3 +276,175 @@ def test_scene_state_sees_geometry_changes():
     assert beat_cache.scene_state(root, cam, {}) == a
     root.children[0].shift([0.0, 1e-9])
     assert beat_cache.scene_state(root, cam, {}) != a
+
+
+# ---------- 播放中才生成的公式、字体 ----------
+
+READOUT = """\
+spec: "0.1"
+meta: {id: frac, title: 分数, line: worked, author: t, license: CC-BY-4.0}
+pedagogy: {insight: 读数, status: method}
+style: {theme: paper, subtitles: none}
+params: {k: 0}
+objects:
+  r: {type: readout, value: k, format: fraction, in: stage}
+beats:
+  - id: b1
+    say: [{id: s1, pace: normal, text: "从零开始。"}]
+    do: [{at: 0, act: show, target: r}]
+  - id: b2
+    say: [{id: s1, pace: normal, text: "变成二分之一。"}]
+    do: [{at: s1, act: tween, args: {k: 0.5}, dur: 1}]
+  - id: b3
+    say: [{id: s1, pace: normal, text: "停在这里。"}]
+    do: [{at: s1, act: hold, dur: 0.5}]
+"""
+
+
+@pytest.fixture
+def fresh_tex(tmp_path, monkeypatch):
+    """公式缓存放进临时目录；本进程的公式记录和读数的节点缓存都清空（别的测试编过的公式不算进来）。"""
+    from moxian.text import tex
+
+    from animind_kit.mx import readout
+
+    monkeypatch.setattr(tex, "CACHE", tmp_path / "tex-cache")
+    monkeypatch.setattr(beat_cache, "_tex_used", {})
+    monkeypatch.setattr(readout, "_CACHE", {})
+    return tex
+
+
+def test_tex_compiled_only_during_playback_is_verified(tmp_path, calls, fresh_tex):
+    """b2 把读数从整数 0 补间到 1/2：\\frac{1}{2} 到播放时才编译，不在开播时的画面里、键也不变。
+    它编出的 svg 变了（同一个 TeX 源），b2 和之后的 beat 要重渲；b1 没用到它，照样命中。"""
+    from animind_kit.mx import readout
+
+    spec = write(tmp_path / "s", READOUT, "frac")
+    run(spec, tmp_path / "s" / "f.mp4")
+    assert calls == ["b1", "b2", "b3"]
+    parts = tmp_path / "s" / ".build-frac.scene-moxian" / "parts"
+    note = json.loads((parts / "b2.hash").read_text())
+    assert r"$\frac{1}{2}$" in note["resources"]["tex"]
+    assert r"$\frac{1}{2}$" not in json.loads((parts / "b1.hash").read_text())["resources"]["tex"]
+    before = framemd5(parts / "b2.mp4")
+
+    half = fresh_tex._compile(r"$\frac{1}{2}$")
+    half.write_text(fresh_tex._compile(r"$\frac{1}{3}$").read_text(encoding="utf-8"), encoding="utf-8")
+    readout._CACHE.clear()  # 像新进程一样：读数不复用上一次建好的节点
+    calls.clear()
+    second = run(spec, tmp_path / "s" / "f.mp4")
+    assert calls == ["b2", "b3"] and second["cache"]["cached"] == ["b1"]
+    assert framemd5(parts / "b2.mp4") != before  # 重渲出来的确实是新的字形
+
+
+def test_tex_toolchain_is_in_the_environment(monkeypatch):
+    base = beat_cache.environment()
+    real = beat_cache._first_line
+    monkeypatch.setattr(beat_cache, "_first_line", lambda cmd: "pdfTeX 0.0 (changed)" if cmd[0] == "latex" else real(cmd))
+    beat_cache.environment.cache_clear()
+    try:
+        assert beat_cache.environment() != base
+    finally:
+        beat_cache.environment.cache_clear()
+
+
+def test_font_change_invalidates(tmp_path, calls, monkeypatch):
+    spec = write(tmp_path, SIX)
+    run(spec, tmp_path / "six.mp4")
+    # 同名字体换了文件（字形不同）：每个字体的内容哈希都变了
+    monkeypatch.setattr(beat_cache, "_face_memo", {k: "0" * 64 for k in beat_cache._face_memo})
+    calls.clear()
+    run(spec, tmp_path / "six.mp4")
+    assert calls == IDS
+
+
+def test_unrecordable_resources_disable_caching(tmp_path, calls, monkeypatch):
+    spec = write(tmp_path, SIX)
+    monkeypatch.setattr(beat_cache, "resources", lambda: None)
+    run(spec, tmp_path / "six.mp4")
+    assert not list((tmp_path / ".build-six.scene-moxian" / "parts").glob("*.hash"))
+    calls.clear()
+    run(spec, tmp_path / "six.mp4")
+    assert calls == IDS
+
+
+# ---------- mp4 内容、旁注结构 ----------
+
+
+def test_same_length_overwrite_of_mp4_is_a_miss(tmp_path, calls):
+    import os
+
+    spec = write(tmp_path, SIX)
+    run(spec, tmp_path / "six.mp4")
+    clip = tmp_path / ".build-six.scene-moxian" / "parts" / "b3.mp4"
+    st = clip.stat()
+    data = bytearray(clip.read_bytes())
+    mid = len(data) // 2
+    data[mid:mid + 64] = bytes(b ^ 0xFF for b in data[mid:mid + 64])
+    clip.write_bytes(bytes(data))
+    os.utime(clip, ns=(st.st_atime_ns, st.st_mtime_ns))  # 大小、mtime 都和原来一样
+    assert clip.stat().st_size == st.st_size
+    calls.clear()
+    run(spec, tmp_path / "six.mp4")
+    assert calls == ["b3"]
+
+
+GOOD = {"format": beat_cache.FORMAT, "key": "a" * 64, "bytes": 4, "sha256": "", "resources": {"tex": {}, "fonts": []}}
+
+
+@pytest.mark.parametrize("note", [
+    "[]", "null", "1", '"x"', "{}", "[1, 2]",
+    json.dumps({**GOOD, "key": 123}),
+    json.dumps({**GOOD, "bytes": "4"}),
+    json.dumps({**GOOD, "bytes": True}),
+    json.dumps({**GOOD, "format": None}),
+    json.dumps({**GOOD, "sha256": None}),
+    json.dumps({**GOOD, "resources": []}),
+    json.dumps({**GOOD, "resources": None}),
+    json.dumps({**GOOD, "resources": {"tex": [], "fonts": []}}),
+    json.dumps({**GOOD, "resources": {"tex": {"x": 1}, "fonts": []}}),
+    json.dumps({**GOOD, "resources": {"tex": {}, "fonts": [["a", "normal"]]}}),
+    json.dumps({**GOOD, "resources": {"tex": {}, "fonts": "abc"}}),
+    json.dumps({k: v for k, v in GOOD.items() if k != "resources"}),
+])
+def test_malformed_sidecar_is_a_miss_not_a_crash(tmp_path, note):
+    import hashlib
+
+    clip = tmp_path / "b.mp4"
+    clip.write_bytes(b"abcd")
+    good = {**GOOD, "sha256": hashlib.sha256(b"abcd").hexdigest()}
+    beat_cache.sidecar(clip).write_text(json.dumps(good))
+    assert beat_cache.hit(clip, "a" * 64)  # 结构完好的旁注是命中
+    beat_cache.sidecar(clip).write_text(note.replace('"sha256": ""', f'"sha256": "{good["sha256"]}"'))
+    assert beat_cache.hit(clip, "a" * 64) is False
+
+
+def test_malformed_sidecars_in_a_render_are_rerendered(tmp_path, calls):
+    spec = write(tmp_path, SIX)
+    run(spec, tmp_path / "six.mp4")
+    parts = tmp_path / ".build-six.scene-moxian" / "parts"
+    (parts / "b2.hash").write_text("[]")
+    (parts / "b3.hash").write_text("null")
+    note = json.loads((parts / "b5.hash").read_text())
+    (parts / "b5.hash").write_text(json.dumps({**note, "resources": {"tex": [], "fonts": {}}}))
+    calls.clear()
+    run(spec, tmp_path / "six.mp4")
+    assert calls == ["b2", "b3", "b5"]
+
+
+def test_no_cache_never_reads_old_sidecars(tmp_path, calls, monkeypatch):
+    spec = write(tmp_path, SIX)
+    run(spec, tmp_path / "six.mp4")
+    for note in (tmp_path / ".build-six.scene-moxian" / "parts").glob("*.hash"):
+        note.write_text("[]")
+
+    def boom(*_):
+        raise AssertionError("cache=False 不该读旁注")
+
+    monkeypatch.setattr(beat_cache, "hit", boom)
+    calls.clear()
+    assert main(["render", str(spec), "--out", str(tmp_path / "six.mp4"), "--no-cache"]) == 0
+    assert calls == IDS
+    calls.clear()
+    assert main(["render", str(spec), "--out", str(tmp_path / "six.mp4"), "--no-cache", "--only", "b4"]) == 0
+    assert calls == ["b4"]

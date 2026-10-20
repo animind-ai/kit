@@ -1237,7 +1237,7 @@ class MoxianCompiler:
     def render_all(self, out: Path, build: Path, only: set[str] | None = None, cache: bool = True) -> dict:
         """逐 beat：编时间线 → 算缓存键 → parts/<beat>.mp4 的 .hash 对得上就只推进状态（_replay），否则 render_beat。
 
-        cache=False（--no-cache）：一律重渲（照样写新的 .hash）。
+        cache=False（--no-cache）：一律重渲（照样写新的 .hash），不读旧的 .hash；--only 之外的 beat 时长也按帧数估。
         only（--only）：只渲染这些 beat，各自复制成 out 旁边的 <beat>.mp4，不拼成片、不动 out；
         其余 beat 照样编时间线、推进状态（不检查版式、没有缓存也不渲染）。
         """
@@ -1256,13 +1256,13 @@ class MoxianCompiler:
             self._camera_exempt()  # 垫底色、钉住会改画面；render_beat / _replay 里再调一次不会重复
             key = self._beat_key(base, chain.hexdigest(), beat, plan)
             chain.json("beat", beat).add("audio", self._audio_digest(bid))
-            valid = beat_cache.hit(clip, key)
-            fresh = cache and valid
-            if chosen and not fresh:
+            valid = cache and beat_cache.hit(clip, key)  # cache=False（--no-cache、regress）根本不读旧旁注
+            if chosen and not valid:
                 self.log(f"render {bid}")
                 beat_cache.invalidate(clip)
                 seconds = self.render_beat(beat, clip, plan)
-                beat_cache.record(clip, key)
+                if not beat_cache.record(clip, key):
+                    self.log(f"提醒：记不下 {bid} 播放中用到的公式和字体，这一段不缓存")
                 rendered.append(bid)
                 self.log(f"muxed {bid} {seconds:.1f}s")
             else:
