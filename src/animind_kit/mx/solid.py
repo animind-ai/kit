@@ -620,7 +620,8 @@ class Solid(Widget):
             self.plane_shown = True
             show = _Func(lambda alpha: None, 0.01, on_begin=lambda: self._place(z1, flats))
             return [show, FadeTo(self.plane_node, 1.0, 0.6)] + [FadeTo(s, 1.0, 0.6) for s in self.sections]
-        return [_Func(lambda alpha: self._place(z0 + (z1 - z0) * alpha, flats), 1.6)]
+        # 截平面连续扫过、截面跟着变：中途采样（compare 的平铺同理）
+        return [_Func(lambda alpha: self._place(z0 + (z1 - z0) * alpha, flats), 1.6).sampled()]
 
     def _compare(self) -> list[Animation]:
         self.compared = True
@@ -639,7 +640,7 @@ class Solid(Widget):
             for flat in self.flats:
                 flat.set_style(opacity=1.0)
 
-        out: list[Animation] = [_Func(morph, 1.2, on_begin=begin)]
+        out: list[Animation] = [_Func(morph, 1.2, on_begin=begin).sampled()]
         out += [FadeTo(lab, 1.0, 0.5) for lab in self.flat_labels if lab is not None]
         return out
 

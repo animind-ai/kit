@@ -41,7 +41,7 @@ from __future__ import annotations
 import math
 
 import numpy as np
-from moxian.anim import Animation, Draw, Param, easing, updater
+from moxian.anim import MIDMOTION, Animation, Draw, Param, easing, updater
 from moxian.core import Group, Node, PathNode, Style
 from moxian.core import transform as T
 from moxian.path import Path, circle, line, polygon
@@ -317,10 +317,14 @@ def secant_slope(f: Function, x0: float, h: float) -> float:
 # ---------- 动画 ----------
 
 class _Approach(Animation):
-    """割线的 h 从当前值变到目标值：同号时按几何级数（对数插值），否则线性。"""
+    """割线的 h 从当前值变到目标值：同号时按几何级数（对数插值），否则线性。
+
+    连续变化（割线转向切线，标注跟着走）：标上中途采样，版式检查在中途也看一眼。
+    """
 
     def __init__(self, graph: Graph, index: int, target: float, duration: float = 2.0):
         super().__init__(graph.node, duration, easing.smooth)
+        self.sample_alphas = MIDMOTION
         self.graph, self.index, self.target = graph, index, float(target)
 
     def begin(self) -> None:

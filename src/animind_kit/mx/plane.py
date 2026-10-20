@@ -440,7 +440,8 @@ class Plane(Widget):
             mesh = lambda s: f(s) @ m0  # noqa: E731
         if whole:
             self.M = m @ self.M
-        out: list[Animation] = [_Geo(self, moves, mesh, duration=1.6)]
+        # 线性变换（rotate / scale / warp / reset）是连续的：中途采样。slide、vector 长出来不标（刚体搬动）
+        out: list[Animation] = [_Geo(self, moves, mesh, duration=1.6).sampled()]
         if whole:  # 整个平面变形时，之前画的圆弧不再对得上：淡出
             for arc in [i for i in self.items.values() if i.kind == "arc"]:
                 out += [FadeTo(arc.node, 0.0, 0.3)] + ([FadeTo(arc.label, 0.0, 0.3)] if arc.label is not None else [])
