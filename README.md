@@ -227,6 +227,7 @@ uv run animind-kit render ../scene-spec/examples/s67-p01.scene.yaml \
   # --backend manim      # switch back to Manim for comparison
   # --subtitles soft     # override style.subtitles: burned (default) / soft / none
   # --lang en            # English version: each sentence's en + i18n.en (scene-spec design doc §7.7); audio must be synthesized with animind-voice --lang en
+  #                      # Defaults to the file's own style.lang: a scene written directly in English (style.lang: en) needs neither --lang nor en
 ```
 
 In the English version, subtitles have a single English line, split into short clauses after commas, periods, and other punctuation, then merged so each cue is at most 44 characters (never merging across periods or question marks); in the Chinese version's bilingual subtitles, bookmarks are not shown in the English line. `animind-voice align` also writes the real start time of each word into timing.json (`words`); when the displayed text and the spoken script have matching character counts (English versions, and Chinese sentences without formulas), each subtitle starts at the moment its word is actually spoken instead of being estimated from character proportions.
@@ -268,7 +269,7 @@ It looks at every piece of text in the first frame after each batch of actions a
 
 The same problem across several beats is merged into one entry. Each storyboard sheet has 6 panels in time order; problems are circled in red with the same numbers (a dashed box marks the other party). `render` runs the same checks on the same sampled frames and lists problems under "layout problems" (版式问题). For intentional cases, write `allow` on the object (see scene-spec design doc §6.4). Exit code is 1 if there are problems.
 
-The `--audio` directory must contain `<beat>.wav` and `<beat>.timing.json` for each beat (the voice pipeline's output format; beats without audio are estimated at 0.22 s per Chinese character). `--quality` takes `l` / `m` / `h`.
+The `--audio` directory must contain `<beat>.wav` and `<beat>.timing.json` for each beat (the voice pipeline's output format; beats without audio are estimated by style.lang: 0.22 s per Chinese character, about 11.7 English characters per second, multiplied by the pace's speed factor and divided by voice.speed, with the same gaps between sentences as animind-voice's GAP). In English scenes, text with no Chinese characters uses a Latin font (Source Sans 3 / Inter / Noto Sans / Helvetica Neue / DejaVu Sans / Arial, the first one installed), and the soft subtitle track is tagged eng. `--quality` takes `l` / `m` / `h`.
 
 #### Font size floors
 
