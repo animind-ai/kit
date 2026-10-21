@@ -189,3 +189,21 @@ def test_chapters_list_steps_and_stops():
         (3.0, "predict"), (4.0, "segment_end"), (6.0, "step"), (9.0, "step"), (12.0, "segment_end")]
     assert ch["stops"][0] == {"time": 3.0, "kind": "predict", "beat": "Hook", "hold": 1.0, "resume": 4.0,
                               "prompt": "猜", "app_item": "q-1"}
+
+
+def test_ghost_without_labels_keeps_only_the_drawing():
+    from animind_kit.mx.plane import Plane
+
+    t = theme("paper")
+    root = Group(name="root")
+    p = Plane("pl", {"widget": "plane", "x": [-2, 2], "y": [-2, 2]}, t, {})
+    built = p.build()
+    root.add(built.node)
+    for a in p.action("vector", {"name": "v", "v": [1, 1], "label": "v"}):
+        a.begin()
+        a.finish()
+    full = seg.snapshot(built.node, root, t)
+    bare = seg.snapshot(built.node, root, t, labels=False)
+    assert len(bare) < len(full)
+    assert all(n.style.fill != t.BG for n in bare)  # 刻度、名字的底色都不在了
+    assert any(n.style.stroke == t.DIM for n in bare)  # 网格、坐标轴、箭头还在
