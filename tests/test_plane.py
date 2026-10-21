@@ -131,3 +131,24 @@ def test_outline_only_shape():
     run(p.action("shape", {"name": "o", "points": [[0, 0], [1, 0], [1, 1]], "fill": False}))
     style = p.items["o"].node.children[0].style
     assert style.fill is None and style.stroke is not None
+
+
+def test_live_matrix_follows_params():
+    from moxian.anim import Param
+    k = Param(0.0, "k")
+    p = Plane("p", {"widget": "plane", "x": [-4, 4], "y": [-3, 3], "mesh": True, "matrix": [[1, "k"], [0, 1]]}, T, {},
+              params={"k": k})
+    p.build()
+    run(p.action("vector", {"name": "e2", "v": [0, 1]}) + p.action("point", {"name": "o", "at": [0, 2], "fixed": True}))
+    assert tuple(tip(p, "e2")) == (0.0, 1.0)
+    mesh0 = p.mesh.path.subpaths[0].points().copy()
+    k.set(1.5)  # 推斜：e2 = (0, 1) → (1.5, 1)
+    assert tuple(tip(p, "e2")) == (1.5, 1.0)
+    assert not np.allclose(p.mesh.path.subpaths[0].points(), mesh0)
+    assert tuple(np.round(p.items["o"].node.children[0].matrix[:2, 2], 6)) == (0.0, 2.0)  # 钉住的点不动
+    # 动作的变换和参数驱动的变形复合：显示的是 L · M
+    run(p.action("warp", {"matrix": [[2, 0], [0, 1]]}))
+    assert tuple(tip(p, "e2")) == (1.5, 1.0)  # (0, 1) 不受横拉影响
+    run(p.action("vector", {"name": "e1", "v": [1, 0]}))
+    k.set(0.0)
+    assert tuple(tip(p, "e1")) == (1.0, 0.0) and tuple(tip(p, "e2")) == (0.0, 1.0)
