@@ -258,3 +258,89 @@ def test_warp_flip_lands_on_the_matrix_and_survives_the_edge_on_frame():
     assert p.mesh.style.stroke_opacity == pytest.approx(0.75)
     run(p.action("reset", {"path": "flip"}))
     assert np.allclose(p.M, np.eye(2)) and np.allclose(tip(p, "j"), (0, 1))
+
+
+# 几个功能叠在一起：线段 / 直线、高亮、参数驱动的变形、翻面各自有测试，这里测它们同时用的时候
+
+
+def names(p: Plane) -> list[str]:
+    return [c.name for c in p.layer.children]
+
+
+def test_new_lines_and_shapes_go_above_a_highlighted_shape():
+    # 光晕垫在多边形下面，也在 layer 里：按个数算插入位置会把新线段塞到多边形底下（被填色盖住）
+    p = plane()
+    run(p.action("shape", {"name": "sq", "points": [[0, 0], [1, 0], [1, 1]]}) + p.action("vector", {"name": "v", "v": [2, 2]}))
+    run(p.action("highlight", {"name": ["sq", "v"]}))
+    run(p.action("segment", {"name": "s", "from": [0, 0], "to": [2, 1]}))
+    run(p.action("shape", {"name": "sq2", "points": [[0, 0], [0, 1], [1, 1]]}))
+    order = names(p)
+    assert order.index("sq") < order.index("sq2") < order.index("s") < order.index("v~halo") < order.index("v")
+    assert order.index("sq~halo") < order.index("sq")
+
+
+def test_unhighlight_leaves_the_layer_order_right():
+    # 取消高亮后光晕淡出但节点还在 layer 里，之后加的线段照样在多边形上面
+    p = plane()
+    run(p.action("shape", {"name": "sq", "points": [[0, 0], [1, 0], [1, 1]]}))
+    run(p.action("highlight", {"name": "sq"}) + p.action("unhighlight", {"name": "sq"}))
+    run(p.action("line", {"name": "l", "dir": [1, 1]}))
+    order = names(p)
+    assert order.index("sq") < order.index("l")
+
+
+def test_highlight_on_lines_follows_a_warp():
+    p = plane(mesh=True)
+    run(p.action("line", {"name": "l", "dir": [1, 1]}) + p.action("segment", {"name": "s", "from": [0, 0], "to": [2, 1]}))
+    run(p.action("highlight", {"name": ["l", "s"]}))
+    run(p.action("warp", {"matrix": [[1, 1], [0, 1]]}))
+    halo = p.items["s"].extra["halo"][0]
+    assert opacity(halo) == pytest.approx(1.0)
+    assert ends(p, "s").tolist() == [[0, 0], [3, 1]]
+    assert np.round(halo.children[0].path.subpaths[0].points()[[0, -1]], 6).tolist() == [[0, 0], [3, 1]]
+    run(p.action("unhighlight", {}) + p.action("remove", {"name": ["l"]}))
+    assert "halo" not in p.items["s"].extra and "l" not in p.items
+
+
+def live_plane() -> tuple[Plane, object]:
+    from moxian.anim import Param
+    k = Param(0.0, "k")
+    p = Plane("p", {"widget": "plane", "x": [-4, 4], "y": [-3, 3], "mesh": True, "matrix": [[1, "k"], [0, 1]]}, T, {},
+              params={"k": k})
+    p.build()
+    return p, k
+
+
+def test_live_matrix_moves_lines_and_their_halos():
+    p, k = live_plane()
+    run(p.action("segment", {"name": "s", "from": [0, 0], "to": [0, 2]}) + p.action("line", {"name": "l", "dir": [0, 1]}))
+    run(p.action("highlight", {"name": "s"}))
+    k.set(1.0)  # 推斜：(0, 2) → (2, 2)，y 轴变成 y = x
+    assert ends(p, "s").tolist() == [[0, 0], [2, 2]]
+    assert ends(p, "l").tolist() == [[-3, -3], [3, 3]]
+    halo = p.items["s"].extra["halo"][0]
+    assert np.round(halo.children[0].path.subpaths[0].points()[[0, -1]], 6).tolist() == [[0, 0], [2, 2]]
+
+
+@pytest.mark.filterwarnings("error")  # 侧对那一帧整个平面是一条线：不能有除零之类的警告
+@pytest.mark.parametrize("live", [False, True])
+def test_flip_with_lines_highlights_and_live_matrix(live):
+    if live:
+        p, k = live_plane()
+    else:
+        p, k = Plane("p", {"widget": "plane", "x": [-4, 4], "y": [-3, 3], "mesh": True}, T, {}), None
+        p.build()
+    run(p.action("line", {"name": "l", "dir": [1, 1]}) + p.action("line", {"name": "h", "dir": [1, 0], "through": [0, 1]})
+        + p.action("segment", {"name": "s", "from": [0, 0], "to": [1, 2]}) + p.action("vector", {"name": "j", "v": [0, 1]}))
+    run(p.action("highlight", {"name": ["s", "l"]}))
+    for m in ([[1, 0], [0, -1]], [[0, 1], [1, 0]]):
+        for a in p.action("warp", {"matrix": m, "path": "flip"}):
+            a.begin()
+            for t in np.linspace(0, 1, 41):
+                a.interpolate(float(t))
+            a.finish()
+        run(p.action("reset", {"path": "flip"}))
+    assert ends(p, "s").tolist() == [[0, 0], [1, 2]] and ends(p, "h").tolist() == [[-4, 1], [4, 1]]
+    if k is not None:
+        k.set(0.5)
+        assert ends(p, "s").tolist() == [[0, 0], [2, 2]] and tip(p, "j").tolist() == [0.5, 1.0]
