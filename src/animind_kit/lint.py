@@ -31,6 +31,7 @@ KINDS = ("small", "cross", "covered", "overlap", "clip")
 FLOORS_720 = {
     "label": 36.0,  # 数轴上的数字和分数标注（整数刻度、分数刻度、点的标注）
     "side": 26.0,  # 右侧栏里的文字
+    "side_note": 22.0,  # 右侧栏里 level: caption 的注释：比正文小一档，仍然看得清
     "practice": 26.0,  # 「练一练」/ 想一想框（think_box）
 }
 
