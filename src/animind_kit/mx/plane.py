@@ -18,7 +18,9 @@ mesh: true 时另有一层彩色网格（mesh_role，默认 B）跟着 warp 变�
 - scale {name（同上）, by}：以原点为中心放大 by 倍；
 - warp {matrix: [[a, b], [c, d]]}：整个平面（彩色网格和所有箭头、点、多边形）按矩阵变形，和之前的变换复合
   （先做的在右边：warp A 再 warp B，结果是 BA）；纯旋转按角度转过去，其他矩阵按 (1−t)I + tM 渐变；
-- reset：整个平面变回原样（之前所有 warp 的逆）；
+  path: flip（只用于行列式为负、带反射的矩阵）：极分解 M = QS，前一半按 S 伸缩，后一半整个平面绕 Q 的镜面直线
+  在空中翻半圈（正投影：uuᵀ + cos θ (I − uuᵀ)），翻到侧面时彩色网格变淡，看起来像翻书页，不再斜着压扁；
+- reset {path（同 warp，现在的变换带反射时可写 flip）}：整个平面变回原样（之前所有 warp 的逆）；
 - relabel {name, label}：换名字（旧的淡出、新的淡入，位置跟着箭头）；
 - remove {name}（一个或列表；不写 = 全部箭头、点、多边形和弧）：淡出。
 
@@ -58,6 +60,7 @@ from .track import Track, polyline, scalar
 from .widgets import Built, Widget
 
 UNIT = 1.0  # 一个单位的长度（画面单位，排版前）
+MESH_OPACITY = 0.75
 HEAD = 0.3  # 箭头尖的长度
 HEAD_W = 0.13  # 箭头尖的半宽
 VEC_W = 6  # 箭杆粗细（1080p 像素）
@@ -89,6 +92,28 @@ def tween_matrix(m: np.ndarray) -> Callable[[float], np.ndarray]:
     if angle is not None:
         return lambda t: rotation(math.degrees(angle * t))
     return lambda t: (1 - t) * np.eye(2) + t * m
+
+
+def polar_flip(m: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """行列式为负的 m = Q S：S 对称正定（伸缩），Q 是沿直线 u 的镜面反射。返回 (S, u)。"""
+    w, sig, vt = np.linalg.svd(m)
+    S = vt.T @ np.diag(sig) @ vt
+    q = w @ vt
+    half = math.atan2(q[1, 0], q[0, 0]) / 2
+    return S, np.array([math.cos(half), math.sin(half)])
+
+
+def flip_path(m: np.ndarray) -> tuple[Callable[[float], np.ndarray], Callable[[float], float]]:
+    """恒等 → m 的翻面路径和每一处的"正对程度"（1 正面、0 侧面）；和 scene_spec.plane.flip_at 一致。"""
+    S, u = polar_flip(m)
+    uu = np.outer(u, u)
+
+    def at(t: float) -> np.ndarray:
+        if t <= 0.5:
+            return (1 - 2 * t) * np.eye(2) + 2 * t * S
+        return (uu + math.cos(math.pi * (2 * t - 1)) * (np.eye(2) - uu)) @ S
+
+    return at, lambda t: 1.0 if t <= 0.5 else abs(math.cos(math.pi * (2 * t - 1)))
 
 
 def clip_line(p: np.ndarray, d: np.ndarray, box: tuple[float, float, float, float]) -> tuple[np.ndarray, np.ndarray] | None:
@@ -123,9 +148,10 @@ class _Geo(Animation):
     """按 alpha 重画一组东西：pts_of(item, alpha) 给出这一帧的数学坐标。"""
 
     def __init__(self, plane: Plane, moves: list[tuple[Item, Callable[[float], np.ndarray]]],
-                 mesh: Callable[[float], np.ndarray] | None = None, duration: float = 1.0):
+                 mesh: Callable[[float], np.ndarray] | None = None, duration: float = 1.0,
+                 facing: Callable[[float], float] | None = None):
         super().__init__(Node(), duration, easing.smooth)
-        self.plane, self.mesh = plane, mesh
+        self.plane, self.mesh, self.facing = plane, mesh, facing
         # 名字在建动作时定下：之后 relabel 换了名字，这一段动画挪的还是当时的那个
         self.moves = [(item, f, item.label) for item, f in moves]
 
@@ -134,6 +160,8 @@ class _Geo(Animation):
             self.plane.paint(item, f(alpha), label)
         if self.mesh is not None:
             self.plane.paint_mesh(self.mesh(alpha))
+        if self.facing is not None:  # 翻面：转到侧面时网格变淡
+            self.plane.mesh.style = self.plane.mesh.style.with_(stroke_opacity=MESH_OPACITY * (0.25 + 0.75 * self.facing(alpha)))
 
 
 class Plane(Widget):
@@ -161,7 +189,7 @@ class Plane(Widget):
                 g.move_to(x0 * U, y * U).line_to(x1 * U, y * U)
             self.grid.add(PathNode(path=g, style=Style(stroke=t.DIM, stroke_width=2, stroke_opacity=0.35)))
         self.mesh = PathNode(path=Path(), style=Style(stroke=t.color(d.get("mesh_role"), t.B), stroke_width=3,
-                                                       stroke_opacity=0.75), name="mesh")
+                                                       stroke_opacity=MESH_OPACITY), name="mesh")
         self.mesh_on = bool(d.get("mesh", False))
         self.M = np.eye(2)  # 到目前为止的变换（建动作时推演）
         if self.mesh_on:
@@ -478,9 +506,9 @@ class Plane(Widget):
                 anims += self.trace(self.names(args["name"])[0], float(args["angle"]), args.get("label"))
             return anims
         if act == "warp":
-            return self.transform(np.array(args["matrix"], dtype=float), self.names(None), True)
+            return self.transform(np.array(args["matrix"], dtype=float), self.names(None), True, args.get("path", "lerp"))
         if act == "reset":
-            return self.transform(np.linalg.inv(self.M), self.names(None), True)
+            return self.transform(np.linalg.inv(self.M), self.names(None), True, args.get("path", "lerp"))
         if act == "relabel":
             item = self.items[args["name"]]
             old = item.label
@@ -505,8 +533,12 @@ class Plane(Widget):
             return out
         raise KeyError(f"组件 {self.name} 没有动作 {act}")
 
-    def transform(self, m: np.ndarray, items: list[Item], whole: bool) -> list[Animation]:
-        f = tween_matrix(m)
+    def transform(self, m: np.ndarray, items: list[Item], whole: bool, how: str = "lerp") -> list[Animation]:
+        facing = None
+        if how == "flip":
+            f, facing = flip_path(m)
+        else:
+            f = tween_matrix(m)
         moves = []
         for item in items:
             p0 = item.pts.copy()
@@ -519,7 +551,7 @@ class Plane(Widget):
         if whole:
             self.M = m @ self.M
         # 线性变换（rotate / scale / warp / reset）是连续的：中途采样。slide、vector 长出来不标（刚体搬动）
-        out: list[Animation] = [_Geo(self, moves, mesh, duration=1.6).sampled()]
+        out: list[Animation] = [_Geo(self, moves, mesh, duration=1.6, facing=facing if mesh is not None else None).sampled()]
         if whole:  # 整个平面变形时，之前画的圆弧不再对得上：淡出
             for arc in [i for i in self.items.values() if i.kind == "arc"]:
                 out += [FadeTo(arc.node, 0.0, 0.3)] + ([FadeTo(arc.label, 0.0, 0.3)] if arc.label is not None else [])
