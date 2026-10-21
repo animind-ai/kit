@@ -574,8 +574,7 @@ class Plane(Widget):
             node = Group(body, name=args["name"])
             node.set_style(opacity=0.0)
             # 多边形垫在箭头下面；多边形之间后画的在上面
-            shapes = sum(1 for i in self.items.values() if i.kind == "shape" and i.node in self.layer.children)
-            self.layer.children.insert(shapes, node)
+            self.layer.children.insert(self.above(("shape",)), node)
             lab = None
             if args.get("label"):
                 lab = self.label_node(args["label"], t.ink(args.get("role") or "C"))
@@ -633,6 +632,12 @@ class Plane(Widget):
             return out
         raise KeyError(f"组件 {self.name} 没有动作 {act}")
 
+    def above(self, kinds: tuple[str, ...]) -> int:
+        """新节点在 layer 里的位置：紧挨着 kinds 这几类东西里最上面的那个之后（一个都没有就放最底下）。
+        不能按个数算：高亮的光晕也在 layer 里，垫在各自的东西下面，取消高亮后也还留着。"""
+        nodes = {id(i.node) for i in self.items.values() if i.kind in kinds}
+        return max((k + 1 for k, c in enumerate(self.layer.children) if id(c) in nodes), default=0)
+
     def new_line(self, kind: str, args: dict) -> list[Animation]:
         """segment / line：一条线画在多边形上面、箭头下面；先淡入再从一端（直线从中点）长出来，名字最后出现。"""
         t = self.theme
@@ -642,8 +647,7 @@ class Plane(Widget):
         body = PathNode(path=Path(), style=Style(stroke=color, stroke_width=4))
         node = Group(body, name=args["name"])
         node.set_style(opacity=0.0)
-        under = sum(1 for i in self.items.values() if i.kind in ("shape", "segment", "line") and i.node in self.layer.children)
-        self.layer.children.insert(under, node)
+        self.layer.children.insert(self.above(("shape", "segment", "line")), node)
         lab = None
         if args.get("label"):
             lab = self.label_node(args["label"], color)
