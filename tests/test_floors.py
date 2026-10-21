@@ -60,3 +60,16 @@ def test_number_line_labels_are_raised_to_the_floor_after_layout(subs):
     side = [t for t in things if t.kind == "text" and t.floor in ("side", "practice")]
     assert {t.floor for t in side} == {"side", "practice"}
     assert min(t.em for t in side) >= min(floors["side"], floors["practice"]) - 0.05
+
+
+def test_side_captions_are_one_step_smaller_than_side_body():
+    doc = _doc("soft")
+    doc["objects"]["cap"] = {"type": "text", "text": "注释一行", "level": "caption", "below": "practice"}
+    doc["beats"][0]["do"].append({"act": "show", "target": "cap"})
+    c = MoxianCompiler(doc, T, None, log=lambda *_: None, quality="l")
+    assert c.inspect(None, None) == []
+    things = [t for t in scan.scan(c.root, c.labels(), c.camera) if t.kind == "text"]
+    floors = c.lint_config.floors
+    body = min(t.em for t in things if t.floor == "side")
+    notes = [t for t in things if t.floor == "side_note"]
+    assert notes and floors["side_note"] - 0.05 <= max(t.em for t in notes) < body  # 比侧栏正文小，不低于注释下限
