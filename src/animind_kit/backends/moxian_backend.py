@@ -66,6 +66,11 @@ CAMERA_MARGIN = 0.5  # fit 时四周留白（画面单位）
 CAMERA_EXEMPT_REGIONS = ("top", "footer")  # 这些区域的对象不跟镜头走
 WIDGET_DUR = 0.5
 LEVELS = {"display": 1.5, "title": 1.25, "body": 1.0, "caption": 0.75}  # scene-spec 的 level → 字号倍数
+
+
+def side_floor(definition: dict) -> str:
+    """侧栏文字的字号下限类别：level: caption 是注释（side_note，比正文小一档），其余按侧栏下限（side）。"""
+    return "side_note" if definition.get("level") == "caption" else "side"
 CUE_LATE = 0.4
 SIZES = {"l": (854, 480, 15), "m": (1280, 720, 30), "h": (1920, 1080, 30)}
 # 中途采样（标了 sample_alphas 的连续动画播到一半之类的时刻）的问题怎么算：
@@ -265,9 +270,9 @@ class MoxianCompiler:
 
     def build_object(self, obj_id: str, definition: dict, opts: dict | None = None) -> Built:
         built = self._build_object(obj_id, definition, opts)
-        # 侧栏里的文字：字号不低于侧栏下限（组件自己标了类别的，例如练一练框，按组件的）
+        # 侧栏里的文字：字号不低于侧栏下限（组件自己标了类别的，例如练一练框，按组件的）；level: caption 按注释的下限
         if analysis.region_static(self.doc, obj_id) == "side" and getattr(built.node, "font_floor", None) is None:
-            built.node.font_floor = "side"
+            built.node.font_floor = side_floor(definition)
         return built
 
     def _build_object(self, obj_id: str, definition: dict, opts: dict | None = None) -> Built:
@@ -285,7 +290,7 @@ class MoxianCompiler:
         kind = definition["type"]
         role = definition.get("role")
         level = LEVELS[definition.get("level", "body")]
-        floor = self.min_size("side") if side else 0.0
+        floor = self.min_size(side_floor(definition)) if side else 0.0
         if kind == "text":
             r = rich(definition["text"], t, size=max(36 * level, floor), color=t.ink(role))
             return Built(r.node, definition, spans=r.spans)

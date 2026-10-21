@@ -114,6 +114,20 @@ def test_place_pins_and_stacks():
     assert np.allclose(text.center(), [0, 0], atol=1e-6)
 
 
+def test_pin_top_with_size_keeps_the_natural_size():
+    # 短公式钉在顶上：不写 size 撑满题卡宽度（字放大好几倍）；写了 size 保持自然大小，只在太宽时缩小
+    short = rich("$A=U\\Sigma V^\\top$", T, 36).node
+    w0 = short.width
+    layout.place(short, {"pin": "top", "size": {"max_width": 1}}, {})
+    assert abs(short.width - w0) < 1e-6 and abs(short.center()[0]) < 1e-6 and short.bbox().y1 > 3.5
+    blown = rich("$A=U\\Sigma V^\\top$", T, 36).node
+    layout.place(blown, {"pin": "top"}, {})
+    assert blown.height > short.height * 1.5  # 以前的样子（不写 size 时不变）
+    long = rich("一行很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长的题目", T, 36).node
+    layout.place(long, {"pin": "top", "size": {"max_width": 0.5}}, {})
+    assert abs(long.width - layout.PIN_WIDTH * 0.5) < 1e-6
+
+
 def test_compiler_builds_example_and_places_lazily():
     doc = load_file(EXAMPLE)
     c = MoxianCompiler(doc, T, None, log=lambda *_: None)
