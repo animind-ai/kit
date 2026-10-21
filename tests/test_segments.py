@@ -89,6 +89,17 @@ def test_ghost_snapshot_is_dim_and_frozen():
     assert names == ["obj~ghost1"] and len(fades) == 1 and state.ghosts == {}
 
 
+def test_ghost_keeps_text_pads_in_the_background_colour():
+    # plane / number_line 的刻度和名字垫一块 BG 底色：残影里改成 DIM 就是一个个灰方块
+    t = theme("paper")
+    root = Group(name="root")
+    pad = PathNode(path=rect(0.6, 0.4), style=Style(fill=t.BG, fill_opacity=0.92))
+    glyph = PathNode(path=rect(0.4, 0.3), style=Style(fill=t.A))
+    root.add(Group(pad, glyph, name="obj"))
+    leaves = seg.snapshot(root.children[0], root, t)
+    assert [n.style.fill for n in leaves] == [t.BG, t.DIM]
+
+
 SPEC = """\
 spec: "0.1"
 meta: {id: seg, title: 分段, line: worked, author: t, license: CC-BY-4.0}
