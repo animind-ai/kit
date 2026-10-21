@@ -4,7 +4,7 @@
 
 ## 中文
 
-[scene-spec](../scene-spec) 的运行时。读一份场景描述文件，加上旁白音频，渲染出成片。渲染引擎默认是 [墨线 moxian](../moxian)，也可以切回 Manim（`--backend manim`）。
+[scene-spec](https://github.com/animind-ai/scene-spec) 的运行时。读一份场景描述文件，加上旁白音频，渲染出成片。渲染引擎默认是 [墨线 moxian](https://github.com/animind-ai/moxian)，也可以切回 Manim（`--backend manim`）。
 
 0.1 包含：
 
@@ -52,6 +52,16 @@
 分段播放（`step` 子步定格、`ghost` 残影、`pin` 常驻，见 scene-spec 设计稿 §7.6）、字幕导出的定格顺延只有墨线后端实现；Manim 后端只导出字幕和章节。
 
 还没有：自动布局求解（现在只按约束摆放 + 检查）、三维（`solid` 是正交轴测图，`orbit` 只转相机，没有透视）、camera 动作、area_model 等洞察系列的原语、Whisper 词级时间戳（书签时刻按字符位置估算）。
+
+### 安装
+
+```bash
+pip install "animind-kit @ git+https://github.com/animind-ai/kit@v0.1.0"
+```
+
+用 uv 安装时加 `--no-sources`，例如 `uv pip install --no-sources "…"`；不加的话 uv 会去找开发用的同级目录，装不上。
+
+scene-spec、moxian、zh-math-reading 会按对应的 tag 一起装上（这几个包还没有发布到 PyPI）。系统里还要有 ffmpeg、xelatex + ctex、dvisvgm 和 Noto Sans CJK SC 字体；用 Manim 后端还要 Cairo / Pango（可参考 `.github/workflows/ci.yml` 里 Ubuntu 的 apt 包列表）。要改代码时，把依赖的几个仓库和本仓库并排检出到同一个目录，再 `uv sync`（见「开发」）。
 
 ### 用法
 
@@ -174,7 +184,7 @@ uv run pytest
 
 ## English
 
-The runtime for [scene-spec](../scene-spec). It reads a scene description file plus narration audio and renders the finished video. The rendering engine defaults to [moxian 墨线](../moxian); you can switch back to Manim (`--backend manim`).
+The runtime for [scene-spec](https://github.com/animind-ai/scene-spec). It reads a scene description file plus narration audio and renders the finished video. The rendering engine defaults to [moxian 墨线](https://github.com/animind-ai/moxian); you can switch back to Manim (`--backend manim`).
 
 0.1 includes:
 
@@ -218,6 +228,16 @@ The runtime for [scene-spec](../scene-spec). It reads a scene description file p
 Segmented playback (`step` sub-step freezes, `ghost` afterimages, `pin` persistent items; see scene-spec design doc §7.6) and freeze-aware shifting of exported subtitles are implemented only in the moxian backend; the Manim backend only exports subtitles and chapters.
 
 Not yet: automatic layout solving (currently placement by constraints + checks only), 3D (`solid` is a fixed-view axonometric drawing; the view can't rotate), camera actions, primitives for the insight series such as area_model, Whisper word-level timestamps (bookmark times are estimated from character positions).
+
+### Installation
+
+```bash
+pip install "animind-kit @ git+https://github.com/animind-ai/kit@v0.1.0"
+```
+
+With uv, add `--no-sources`, e.g. `uv pip install --no-sources "…"`; without it uv looks for the sibling directories used in development and fails.
+
+scene-spec, moxian and zh-math-reading are installed from their matching tags (these packages are not on PyPI yet). The system also needs ffmpeg, xelatex + ctex, dvisvgm and the Noto Sans CJK SC font; the Manim backend also needs Cairo / Pango (see the apt package list for Ubuntu in `.github/workflows/ci.yml`). To work on the code, check out the repositories it depends on next to this one in the same directory and run `uv sync` (see "Development").
 
 ### Usage
 
