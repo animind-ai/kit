@@ -1,7 +1,7 @@
 [project]
 name = "animind-kit"
 version = "0.1.0"
-description = "scene-spec 的 Manim 运行时：主题、组件、布局、编译后端"
+description = "scene-spec 的运行时：主题、组件、布局、编译后端（默认墨线 moxian，可选 Manim） · Runtime for scene-spec (moxian by default, Manim optional)"
 readme = "README.md"
 license = "MIT"
 authors = [{ name = "Boxi Yu" }]
