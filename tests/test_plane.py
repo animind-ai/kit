@@ -7,7 +7,7 @@ import pytest
 
 from animind_kit import theme
 from animind_kit.mx import widgets
-from animind_kit.mx.plane import Plane, clip_line, rotation_angle, tween_matrix
+from animind_kit.mx.plane import Plane, clip_line, flip_path, rotation_angle, tween_matrix
 
 T = theme.theme("paper")
 
@@ -192,7 +192,6 @@ def test_lines_relabel_and_remove():
     assert "l" not in p.items
 
 
-
 def test_highlight_glows_follows_warps_and_goes_away():
     p = plane(mesh=True)
     run(p.action("vector", {"name": "a", "v": [2, 1]}) + p.action("point", {"name": "o", "at": [1, 1]}))
@@ -234,3 +233,28 @@ def test_live_matrix_follows_params():
     run(p.action("vector", {"name": "e1", "v": [1, 0]}))
     k.set(0.0)
     assert tuple(tip(p, "e1")) == (1.0, 0.0) and tuple(tip(p, "e2")) == (0.0, 1.0)
+
+
+@pytest.mark.parametrize("m", [[[1, 0], [0, -1]], [[1.2, 3.4], [1.6, 1.2]], [[0, 1], [1, 0]], [[-2, 0], [0, 0.5]]])
+def test_flip_path_stretches_then_turns_over(m):
+    m = np.array(m, dtype=float)
+    at, facing = flip_path(m)
+    assert np.allclose(at(0), np.eye(2)) and np.allclose(at(1), m)
+    dets = [np.linalg.det(at(t)) for t in np.linspace(0, 0.5, 11)]
+    assert min(dets) > 0  # 前一半只伸缩，不经过压扁
+    assert facing(0.25) == 1 and facing(0.75) < 1e-9 and facing(1) == pytest.approx(1)
+
+
+def test_warp_flip_lands_on_the_matrix_and_survives_the_edge_on_frame():
+    p = plane(mesh=True)
+    run(p.action("vector", {"name": "i", "v": [1, 0]}) + p.action("vector", {"name": "j", "v": [0, 1]}))
+    anims = p.action("warp", {"matrix": [[1, 0], [0, -1]], "path": "flip"})
+    for a in anims:
+        a.begin()
+        for t in np.linspace(0, 1, 41):  # t = 0.75 正好侧对：整个平面是一条线
+            a.interpolate(float(t))
+        a.finish()
+    assert np.allclose(tip(p, "j"), (0, -1)) and np.allclose(p.M, [[1, 0], [0, -1]])
+    assert p.mesh.style.stroke_opacity == pytest.approx(0.75)
+    run(p.action("reset", {"path": "flip"}))
+    assert np.allclose(p.M, np.eye(2)) and np.allclose(tip(p, "j"), (0, 1))
