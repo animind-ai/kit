@@ -133,6 +133,88 @@ def test_outline_only_shape():
     assert style.fill is None and style.stroke is not None
 
 
+def ends(p: Plane, name: str) -> np.ndarray:
+    """线段 / 直线画出来的两端（画面坐标）。"""
+    return np.round(np.array(p.items[name].node.children[0].path.subpaths[0].points()), 6)[[0, -1]]
+
+
+def test_segment_and_line_grow_at_playback():
+    p = plane()
+    anims = p.action("segment", {"name": "s", "from": [0, 0], "to": [2, 1], "label": "s"})
+    anims += p.action("line", {"name": "l", "dir": [1, 1]})
+    assert p.items["s"].node.children[0].path.is_empty() and p.items["l"].node.children[0].path.is_empty()
+    run(anims)
+    assert ends(p, "s").tolist() == [[0, 0], [2, 1]]
+    assert ends(p, "l").tolist() == [[-1, -1], [4, 4]]  # 过原点的 span 裁在 x [-2, 5]、y [-1, 4] 里
+    assert opacity(p.items["s"].label) == 1.0
+    # 线段、直线垫在箭头下面
+    run(p.action("vector", {"name": "v", "v": [1, 1]}))
+    order = [c.name for c in p.layer.children]
+    assert order.index("s") < order.index("v") and order.index("l") < order.index("v")
+
+
+def test_line_by_equation_and_through():
+    p = plane()
+    run(p.action("line", {"name": "row", "eq": [1, 2, 4]}) + p.action("line", {"name": "x3", "dir": [0, 1], "through": [3, 0]}))
+    a, b = ends(p, "row")
+    assert sorted([tuple(a), tuple(b)]) == [(-2.0, 3.0), (5.0, -0.5)]  # x + 2y = 4 在范围里的两端
+    assert sorted(map(tuple, ends(p, "x3"))) == [(3.0, -1.0), (3.0, 4.0)]
+
+
+def test_eigenvector_stays_on_its_span_through_a_warp():
+    p = plane(x=[-5, 5], y=[-5, 5], mesh=True)
+    m = np.array([[3.0, 1.0], [0.0, 2.0]])  # 特征向量 (1, 0)、(1, -1)
+    run(p.action("line", {"name": "e", "dir": [1, -1]}) + p.action("vector", {"name": "v", "v": [1, -1]}))
+    anims = p.action("warp", {"matrix": m.tolist()})
+    for a in anims:
+        a.begin()
+        for alpha in (0.25, 0.5, 0.75, 1.0):
+            a.interpolate(alpha)
+            (x0, y0), (x1, y1) = ends(p, "e")
+            assert abs((x1 - x0) + (y1 - y0)) < 1e-6  # 直线方向一直是 (1, −1)
+            tx, ty = tip(p, "v")
+            assert abs(tx + ty) < 1e-6  # 箭头尖一直在直线 y = −x 上
+        a.finish()
+    # 不是特征向量方向的直线跟着转
+    run(p.action("reset", {}))
+    run(p.action("line", {"name": "g", "dir": [0, 1]}))
+    run(p.action("warp", {"matrix": m.tolist()}))
+    (x0, y0), (x1, y1) = ends(p, "g")
+    assert abs((x1 - x0) * 2 - (y1 - y0) * 1) < 1e-6  # (0, 1) → (1, 2)
+
+
+def test_lines_relabel_and_remove():
+    p = plane()
+    run(p.action("line", {"name": "l", "dir": [1, 0], "label": "L", "dashed": True}))
+    run(p.action("relabel", {"name": "l", "label": "M"}))
+    assert opacity(p.items["l"].label) == 1.0
+    run(p.action("remove", {"name": "l"}))
+    assert "l" not in p.items
+
+
+
+def test_highlight_glows_follows_warps_and_goes_away():
+    p = plane(mesh=True)
+    run(p.action("vector", {"name": "a", "v": [2, 1]}) + p.action("point", {"name": "o", "at": [1, 1]}))
+    shaft = p.items["a"].node.children[0]
+    w0 = shaft.style.stroke_width
+    anims = p.action("highlight", {"name": ["a", "o"], "pulse": True})
+    halo = p.items["a"].extra["halo"][0]
+    assert opacity(halo) == 0.0 and shaft.style.stroke_width == w0  # 播放时才亮
+    run(anims)
+    assert opacity(halo) == pytest.approx(1.0) and shaft.style.stroke_width == pytest.approx(w0 * 1.6)
+    order = p.layer.children
+    assert order.index(halo) < order.index(p.items["a"].node)  # 光晕垫在箭头下面
+    run(p.action("warp", {"matrix": [[1, 1], [0, 1]]}))
+    glow_head = halo.children[1].path.subpaths[0].points()[0]
+    assert tuple(np.round(glow_head, 6)) == (3.0, 1.0)  # 光晕跟着箭头尖走：(2, 1) → (3, 1)
+    dot_halo = p.items["o"].extra["halo"][0].children[0]
+    assert tuple(np.round(dot_halo.matrix[:2, 2], 6)) == (2.0, 1.0)  # 点 (1, 1) → (2, 1)
+    run(p.action("unhighlight", {}))
+    assert opacity(halo) == 0.0 and shaft.style.stroke_width == pytest.approx(w0)
+    assert "halo" not in p.items["a"].extra and "halo" not in p.items["o"].extra
+
+
 def test_live_matrix_follows_params():
     from moxian.anim import Param
     k = Param(0.0, "k")
