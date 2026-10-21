@@ -13,6 +13,11 @@ mesh: true 时另有一层彩色网格（mesh_role，默认 B）跟着 warp 变�
   fixed: true 时它钉在画面上，整个平面 rotate / scale / warp / reset 时不跟着走（标出"原来在这里"、比较两种结果用）；
 - shape {name, points: [[x, y], …], role（默认 C）, label, fill（默认 true；false 只描粗边）}：填色多边形（单位正方形、小旗子），跟着变换走；
   label 写在多边形的重心上；
+- segment {name, from: [x, y], to: [x, y], role（默认 B）, label, side, along（默认 0.5）, dashed}：线段，两端跟着变换走；
+- line {name, dir: [dx, dy], through: [x, y]（默认原点）| eq: [p, q, r]（p x + q y = r）, role（默认 B）, label, side,
+  along（名字挨着画出来那段的哪一处，默认 0.85）, dashed}：无穷长的直线，每一帧裁在坐标范围里画；不写 through 就是
+  过原点、方向 dir 的直线（span）。线上一点和方向都跟着 rotate / scale / warp / reset 变换，所以 warp 时特征向量
+  一直躺在自己的 span 上（(1−t)I + tM 和 M 有同样的特征向量）；线段和直线画在多边形上面、箭头下面；
 - rotate {name（一个名字或名字列表；不写 = 整个平面）, angle（度，逆时针为正）, label, trace（默认 true）}：
   绕原点转；写了 name 时画出第一个东西的终点扫过的圆弧，弧旁写 label（例如 \\times i）；
 - scale {name（同上）, by}：以原点为中心放大 by 倍；
@@ -20,6 +25,9 @@ mesh: true 时另有一层彩色网格（mesh_role，默认 B）跟着 warp 变�
   （先做的在右边：warp A 再 warp B，结果是 BA）；纯旋转按角度转过去，其他矩阵按 (1−t)I + tM 渐变；
 - reset：整个平面变回原样（之前所有 warp 的逆）；
 - relabel {name, label}：换名字（旧的淡出、新的淡入，位置跟着箭头）；
+- highlight {name（一个或列表）, pulse（默认 false）}：给箭头、点、多边形加一圈同色的光晕，描边加粗 1.6 倍；
+  光晕跟着之后的 rotate / scale / warp 走；pulse: true 时亮起来跳两下。unhighlight {name（不写 = 全部）}：收掉。
+  标出平面上的某一个东西用它（内置的 mark 只能标整个组件或部件，画的是一块金色方块）；
 - remove {name}（一个或列表；不写 = 全部箭头、点、多边形和弧）：淡出。
 
 预计算的轨迹和参数曲线（定义里写，不是动作；几何见 track.py / scene_spec.curves）：
@@ -46,7 +54,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import numpy as np
-from moxian.anim import Animation, Draw, easing, updater
+from moxian.anim import Animation, Draw, Restyle, easing, updater
 from moxian.core import Group, Node, PathNode, Style
 from moxian.core import transform as T
 from moxian.path import Path, circle, polygon, rounded_rect
@@ -65,6 +73,9 @@ DOT = 0.1  # 点的半径
 PAD = 0.06  # 文字底色比字大出的边
 MOVER_REACH = (1.0, 1.8)  # 沿曲线走的点的名字躲刻度时试的距离（倍数）
 LABEL_GAP = 0.32  # 箭头名字离箭杆中点的距离
+HALO_W = 16  # 高亮光晕比原描边宽出的像素（1080p）
+HALO_OPACITY = 0.3
+HL_STROKE = 1.6  # 高亮时描边加粗的倍数
 LABEL_DIRS = {
     "u": (0.0, 1.0), "d": (0.0, -1.0), "l": (-1.0, 0.0), "r": (1.0, 0.0),
     "ul": (-0.71, 0.71), "ur": (0.71, 0.71), "dl": (-0.71, -0.71), "dr": (0.71, -0.71),
@@ -108,9 +119,9 @@ def clip_line(p: np.ndarray, d: np.ndarray, box: tuple[float, float, float, floa
 
 @dataclass
 class Item:
-    kind: str  # vector / point / shape / arc
+    kind: str  # vector / point / shape / segment / line / arc
     name: str
-    pts: np.ndarray  # 数学坐标：vector [尾, 头]；point [点]；shape 顶点
+    pts: np.ndarray  # 数学坐标：vector [尾, 头]；point [点]；shape 顶点；segment [起, 止]；line [线上一点, 点 + 方向]
     node: Group
     label: Node | None = None
     side: float = 1.0  # vector：名字在左边 +1、右边 −1
@@ -303,7 +314,12 @@ class Plane(Widget):
         return np.asarray(p, dtype=float) * UNIT
 
     def paint(self, item: Item, pts: np.ndarray, label: Node | None = None) -> None:
-        """按数学坐标 pts 重画 item（箭头、点、多边形），名字 label 跟着挪。"""
+        """按数学坐标 pts 重画 item（箭头、点、多边形），名字 label 跟着挪；高亮的光晕跟着重画。"""
+        self._paint(item, pts, label)
+        if "halo" in item.extra:
+            sync_halo(item)
+
+    def _paint(self, item: Item, pts: np.ndarray, label: Node | None = None) -> None:
         P = self.w(pts)
         if item.kind == "vector":
             shaft, head = item.node.children
@@ -333,11 +349,48 @@ class Plane(Widget):
             item.node.children[0].path = polygon([tuple(p) for p in P])
             if label is not None:
                 self.place_label(item, pts, label)
+        elif item.kind in ("segment", "line"):
+            ends = self.line_ends(item, P)
+            body = item.node.children[0]
+            if ends is None:
+                body.path = Path()
+            else:
+                a, b = ends
+                body.path = dashed([(tuple(a), tuple(b))], 0.2, 0.12) if item.dashed else Path().move_to(*a).line_to(*b)
+            if label is not None and ends is not None:
+                self.place_label(item, pts, label)
+
+    def line_ends(self, item: Item, P: np.ndarray) -> tuple[np.ndarray, np.ndarray] | None:
+        """线段、直线这一帧画出来的两端（画面坐标）：直线裁在坐标范围里；长出来时（reveal < 1）从中点向两头长。"""
+        a, b = P[0], P[1]
+        if item.kind == "line":
+            d = b - a
+            if float(np.linalg.norm(d)) < 1e-9:
+                return None
+            seg = clip_line(a, d, tuple(v * UNIT for v in self.box))
+            if seg is None:
+                return None
+            a, b = seg
+        r = item.extra.get("reveal", 1.0)
+        if r < 1.0:
+            if item.kind == "line":
+                m = (a + b) / 2
+                a, b = m + (a - m) * r, m + (b - m) * r
+            else:
+                b = a + (b - a) * r
+        if float(np.linalg.norm(b - a)) < 1e-6:
+            return None
+        return a, b
 
     def place_label(self, item: Item, pts: np.ndarray, lab: Node) -> None:
         P = self.w(pts)
-        if item.kind == "vector":
+        if item.kind in ("vector", "segment", "line"):
             a, b = P[0], P[1]
+            if item.kind != "vector":
+                ends = self.line_ends(item, P)
+                if ends is None:
+                    return
+                a, b = ends
             v = b - a
             n = float(np.linalg.norm(v))
             u = v / n if n > 1e-6 else np.array([1.0, 0.0])
@@ -470,6 +523,8 @@ class Plane(Widget):
             self.items[item.name] = item
             self.paint(item, item.pts, lab)  # 新节点还看不见，建动作时就能摆好
             return [FadeTo(node, 1.0, 0.5)] + ([FadeTo(lab, 1.0, 0.5)] if lab is not None else [])
+        if act in ("segment", "line"):
+            return self.new_line(act, args)
         if act in ("rotate", "scale"):
             m = rotation(float(args["angle"])) if act == "rotate" else float(args["by"]) * np.eye(2)
             whole = args.get("name") is None
@@ -493,17 +548,86 @@ class Plane(Widget):
             if old is not None:
                 out.insert(0, FadeTo(old, 0.0, 0.3))
             return out
+        if act == "highlight":
+            out = []
+            for item in self.names(args["name"]):
+                out += self.highlight(item, bool(args.get("pulse", False)))
+            return out
+        if act == "unhighlight":
+            value = args.get("name")
+            items = [i for i in self.items.values() if "halo" in i.extra] if value is None else self.names(value)
+            return [a for item in items for a in self.unhighlight(item)]
         if act == "remove":
             value = args.get("name")
             items = list(self.items.values()) if value is None else self.names(value)
             out = []
             for item in items:
+                if "halo" in item.extra:
+                    out += self.unhighlight(item)
                 out.append(FadeTo(item.node, 0.0, 0.4))
                 if item.label is not None:
                     out.append(FadeTo(item.label, 0.0, 0.4))
                 del self.items[item.name]
             return out
         raise KeyError(f"组件 {self.name} 没有动作 {act}")
+
+    def new_line(self, kind: str, args: dict) -> list[Animation]:
+        """segment / line：一条线画在多边形上面、箭头下面；先淡入再从一端（直线从中点）长出来，名字最后出现。"""
+        t = self.theme
+        role = args.get("role")
+        is_dashed = bool(args.get("dashed", False))
+        color = t.ink(role or "B")
+        body = PathNode(path=Path(), style=Style(stroke=color, stroke_width=4))
+        node = Group(body, name=args["name"])
+        node.set_style(opacity=0.0)
+        under = sum(1 for i in self.items.values() if i.kind in ("shape", "segment", "line") and i.node in self.layer.children)
+        self.layer.children.insert(under, node)
+        lab = None
+        if args.get("label"):
+            lab = self.label_node(args["label"], color)
+            lab.set_style(opacity=0.0)
+            self.labels.add(lab)
+        if kind == "segment":
+            pts = np.array([args["from"], args["to"]], dtype=float)
+        elif "eq" in args:
+            p, q, r = (float(v) for v in args["eq"])
+            base = np.array([p, q]) * r / (p * p + q * q)  # 离原点最近的点
+            pts = np.array([base, base + np.array([-q, p])])
+        else:
+            at = np.asarray(args.get("through", (0, 0)), dtype=float)
+            pts = np.array([at, at + np.asarray(args["dir"], dtype=float)])
+        item = Item(kind, args["name"], pts, node, lab, side=1.0 if args.get("side", "l") == "l" else -1.0, dashed=is_dashed,
+                    extra={"role": role or "B", "along": float(args.get("along", 0.5 if kind == "segment" else 0.85)),
+                           "reveal": 0.0})
+        self.items[item.name] = item
+        self.paint(item, item.pts, lab)
+        anims: list[Animation] = [FadeTo(node, 1.0, 0.15), _Reveal(self, item, 0.8)]
+        if lab is not None:
+            anims.append(_Late(FadeTo(lab, 1.0, 0.3), 0.8))
+        return anims
+
+    def highlight(self, item: Item, pulse: bool) -> list[Animation]:
+        """光晕：item 每一片路径的同色宽描边（30% 不透明），垫在 item 下面；item 自己的描边加粗。"""
+        color = self.theme.ink(item.extra.get("role") or {"point": "HL", "shape": "C"}.get(item.kind, "A"))
+        leaves = [n for n, _m, _s in item.node.walk() if isinstance(n, PathNode)]
+        halo = Group(*[PathNode(path=Path(), style=Style(
+            stroke=color, stroke_width=(n.style.stroke_width if n.style.stroke else 0.0) + HALO_W, stroke_opacity=HALO_OPACITY,
+            fill=color if n.style.fill and item.kind != "shape" else None, fill_opacity=HALO_OPACITY)) for n in leaves],
+            name=f"{item.name}~halo")
+        halo.set_style(opacity=0.0)
+        self.layer.children.insert(self.layer.children.index(item.node), halo)
+        item.extra["halo"] = (halo, leaves)
+        sync_halo(item)
+        widths = {id(n): n.style.stroke_width for n in leaves}
+        item.extra["widths"] = widths
+        out: list[Animation] = [_Pulse(halo, 1.2) if pulse else FadeTo(halo, 1.0, 0.4)]
+        out += [Restyle(n, 0.4, stroke_width=widths[id(n)] * HL_STROKE) for n in leaves if n.style.stroke]
+        return out
+
+    def unhighlight(self, item: Item) -> list[Animation]:
+        halo, leaves = item.extra.pop("halo")
+        widths = item.extra.pop("widths")
+        return [FadeTo(halo, 0.0, 0.3)] + [Restyle(n, 0.3, stroke_width=widths[id(n)]) for n in leaves if n.style.stroke]
 
     def transform(self, m: np.ndarray, items: list[Item], whole: bool) -> list[Animation]:
         f = tween_matrix(m)
@@ -558,11 +682,48 @@ class Plane(Widget):
         return out
 
 
+def sync_halo(item: Item) -> None:
+    """光晕的每一片照着 item 对应那片路径的当前几何（含点的平移）重画。"""
+    halo, leaves = item.extra["halo"]
+    mats = {id(n): m for n, m, _s in item.node.walk() if isinstance(n, PathNode)}
+    for glow, leaf in zip(halo.children, leaves, strict=True):
+        glow.path = leaf.path
+        glow.matrix = mats[id(leaf)]
+
+
+class _Pulse(Animation):
+    """光晕亮起来跳两下：不透明度 0 → 1 → 0.35 → 1 → 0.35 → 1。"""
+
+    def __init__(self, node: Node, duration: float):
+        super().__init__(node, duration, easing.linear)
+
+    def interpolate(self, alpha: float) -> None:
+        a = min(1.0, alpha * 4) if alpha < 0.25 else 0.675 + 0.325 * math.cos((alpha - 0.25) / 0.75 * 4 * math.pi)
+        self.node.set_style(opacity=a)
+
+
 def place(node: Node, at: np.ndarray, toward: np.ndarray) -> None:
     """node 的包围盒贴在 at 点朝 toward 的一侧（toward 每个分量取 −1、0、1 的方向）。"""
     b = node.bbox()
     half = np.array([b.width, b.height]) / 2
     node.shift(at + toward * half - b.center)
+
+
+class _Reveal(Animation):
+    """线段、直线长出来：reveal 从 0 到 1（播放时才改），按当前的几何重画。"""
+
+    def __init__(self, plane: Plane, item: Item, duration: float):
+        super().__init__(Node(), duration, easing.smooth)
+        # 几何在建动作时定下：同一个 beat 里后面的 warp 已经改了 item.pts
+        self.plane, self.item, self.label, self.pts = plane, item, item.label, item.pts.copy()
+
+    def interpolate(self, alpha: float) -> None:
+        self.item.extra["reveal"] = max(alpha, 1e-3)
+        self.plane.paint(self.item, self.pts, self.label)
+
+    def finish(self) -> None:
+        self.interpolate(1.0)
+        self.item.extra["reveal"] = 1.0
 
 
 class _Show(Draw):
