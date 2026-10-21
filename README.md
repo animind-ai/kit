@@ -59,6 +59,8 @@
 pip install "animind-kit @ git+https://github.com/animind-ai/kit@v0.1.0"
 ```
 
+用 uv 安装时加 `--no-sources`，例如 `uv pip install --no-sources "…"`；不加的话 uv 会去找开发用的同级目录，装不上。
+
 scene-spec、moxian、zh-math-reading 会按对应的 tag 一起装上（这几个包还没有发布到 PyPI）。系统里还要有 ffmpeg、xelatex + ctex、dvisvgm 和 Noto Sans CJK SC 字体；用 Manim 后端还要 Cairo / Pango（可参考 `.github/workflows/ci.yml` 里 Ubuntu 的 apt 包列表）。要改代码时，把依赖的几个仓库和本仓库并排检出到同一个目录，再 `uv sync`（见「开发」）。
 
 ### 用法
@@ -232,6 +234,8 @@ Not yet: automatic layout solving (currently placement by constraints + checks o
 ```bash
 pip install "animind-kit @ git+https://github.com/animind-ai/kit@v0.1.0"
 ```
+
+With uv, add `--no-sources`, e.g. `uv pip install --no-sources "…"`; without it uv looks for the sibling directories used in development and fails.
 
 scene-spec, moxian and zh-math-reading are installed from their matching tags (these packages are not on PyPI yet). The system also needs ffmpeg, xelatex + ctex, dvisvgm and the Noto Sans CJK SC font; the Manim backend also needs Cairo / Pango (see the apt package list for Ubuntu in `.github/workflows/ci.yml`). To work on the code, check out the repositories it depends on next to this one in the same directory and run `uv sync` (see "Development").
 
