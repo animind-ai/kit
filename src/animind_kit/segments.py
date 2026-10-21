@@ -3,6 +3,7 @@
 - ghost：入场那一刻给目标拍一张"快照"——把它所有可见的路径叶子按当时的世界矩阵拷出来，
   一律改成 DIM 色（文字的 BG 底色除外）、整体不透明度 0.3（可配），画在原对象后面；之后原对象怎么变，残影都不动。
   和 focus（描边框 + 兄弟元素 0.45 不透明度、颜色不变）、mark（淡金底色）都不一样：残影是灰的。
+  labels: false 时不拷组件的标注（刻度数字、名字），原地残影的字不会和变形后的字叠在一起。
 - step：子步结束。segmented 时在这一刻定格 hold 秒：画面时间轴在这里停住（Warped 时间线），
   旁白在同一时刻插入等长的静音；之后所有动作、句子、书签的时刻顺延。
 - pin：记下这个对象常驻；布局求解器把它当固定占位，clear 不收它 pin 之前的装饰。
@@ -36,10 +37,11 @@ class GhostIn(Animation):
         self.gap = GAPS[args.get("gap", GHOST_GAP)]
         self.factor = float(args.get("scale", 1.0))
         self.opacity = float(args.get("opacity", GHOST_OPACITY))
+        self.labels = bool(args.get("labels", True))
 
     def begin(self) -> None:
         super().begin()
-        self.holder.children = snapshot(self.source, self.root, self.theme)
+        self.holder.children = snapshot(self.source, self.root, self.theme, self.labels)
         self.holder.matrix = np.eye(3)
         self.holder.set_style(opacity=0.0)
         box = self.holder.bbox()
@@ -61,14 +63,35 @@ class GhostIn(Animation):
         self.holder.set_style(opacity=self.opacity * alpha)
 
 
-def snapshot(source: Node, root: Node, theme: Theme) -> list[Node]:
+def is_label(node: Node) -> bool:
+    """组件的标注（刻度数字、箭头和点的名字）：字本身标了 font_floor = "label"，或者是"底色 + 字"那一组。"""
+    return getattr(node, "font_floor", None) == "label" or any(getattr(c, "font_floor", None) == "label" for c in node.children)
+
+
+def _walk(node: Node, m: np.ndarray, style: Style | None, labels: bool):
+    """同 Node.walk（世界矩阵、样式继承、透明度相乘、按 z 排序），labels 为假时跳过组件的标注。"""
+    if not labels and is_label(node):
+        return
+    m = m @ node.matrix
+    if node.style is None:
+        style = style or Style()
+    elif style is None:
+        style = node.style
+    else:
+        style = node.style.with_(opacity=node.style.opacity * style.opacity)
+    yield node, m, style
+    for child in sorted(node.children, key=lambda n: n.z):
+        yield from _walk(child, m, style, labels)
+
+
+def snapshot(source: Node, root: Node, theme: Theme, labels: bool = True) -> list[Node]:
     """source 此刻可见的路径叶子（世界坐标），改成 DIM 色。mark 垫的淡金底色不拷：灰底块只会添乱。
 
     文字垫的底色（填 BG、不描边：刻度、箭头名字下面那块）保持 BG 色：改成 DIM 就成了一个个灰方块；
-    留着 BG 色，残影自己的网格线照样从残影的字底下过。
+    留着 BG 色，残影自己的网格线照样从残影的字底下过。labels 为假（ghost 的 labels: false）时连字带底色都不拷。
     """
     out: list[Node] = []
-    for node, m, style in source.walk(parent_matrix_of(root, source)):
+    for node, m, style in _walk(source, parent_matrix_of(root, source), None, labels):
         if not isinstance(node, PathNode) or node.path.is_empty() or not style.visible():
             continue
         if style.fill == theme.MARK and style.stroke is None:
