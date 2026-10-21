@@ -30,6 +30,10 @@ mesh: true 时另有一层彩色网格（mesh_role，默认 B）跟着 warp 变�
   标出平面上的某一个东西用它（内置的 mark 只能标整个组件或部件，画的是一块金色方块）；
 - remove {name}（一个或列表；不写 = 全部箭头、点、多边形和弧）：淡出。
 
+参数驱动的变形（定义里写）：matrix: [[a, b], [c, d]]，每一项是数或参数表达式。整个平面（彩色网格、箭头、点、多边形，
+fixed 的点除外）在动作的变换之外再按它变形：显示的是 L(参数) · （动作累积的变换）；tween 参数时 updater 按参数的
+当前值重画，平面连续地跟着变（行列式、矩阵元素用 readout 对象显示）。
+
 预计算的轨迹和参数曲线（定义里写，不是动作；几何见 track.py / scene_spec.curves）：
 - curves: [{data: 键} 或 {x: "x(t)", y: "y(t)", domain: [t0, t1]}, progress（默认 1）, along（length / param）, role（默认 A）]：
   data 引用顶层 data 里的点列 [[x, y], …]（可以是 {src: 文件.json}），参数曲线在 domain 上等分取样；
@@ -174,7 +178,12 @@ class Plane(Widget):
         self.mesh = PathNode(path=Path(), style=Style(stroke=t.color(d.get("mesh_role"), t.B), stroke_width=3,
                                                        stroke_opacity=0.75), name="mesh")
         self.mesh_on = bool(d.get("mesh", False))
+        self.live, self.live_names = None, set()  # matrix：参数驱动的变形，每一项一个取当前值的函数
+        if d.get("matrix") is not None:
+            self.live = [scalar(v, self.params) for row in d["matrix"] for v in row]
+            self.live_names = set().union(*(names for _f, names in self.live))
         self.M = np.eye(2)  # 到目前为止的变换（建动作时推演）
+        self.mesh_shown = self.M
         if self.mesh_on:
             self.paint_mesh(self.M)
         self.axes = Group(name="axes")
@@ -216,6 +225,8 @@ class Plane(Widget):
         self.items: dict[str, Item] = {}
         if self.track_params:
             updater(node, lambda _n: self.paint_tracks(), *(self.params[n] for n in sorted(self.track_params)))
+        if self.live_names:
+            updater(node, lambda _n: self.repaint(), *(self.params[n] for n in sorted(self.live_names)))
         return Built(node, parts={"axes": [self.axes], "grid": [self.grid], "mesh": [self.mesh],
                                   "items": [self.layer], "curve": curves, "point": movers})
 
@@ -313,9 +324,30 @@ class Plane(Widget):
     def w(self, p) -> np.ndarray:
         return np.asarray(p, dtype=float) * UNIT
 
+    def L(self) -> np.ndarray:
+        """参数驱动的变形在参数当前值下的矩阵（没写 matrix 时是单位阵）。"""
+        if self.live is None:
+            return np.eye(2)
+        return np.array([f() for f, _names in self.live], dtype=float).reshape(2, 2)
+
+    def shown(self, item: Item, pts: np.ndarray) -> np.ndarray:
+        """动作推演出的数学坐标 → 画面上的坐标（再乘上参数驱动的变形；钉住的点不乘）。"""
+        if self.live is None or item.extra.get("fixed"):
+            return pts
+        return pts @ self.L().T
+
+    def repaint(self) -> None:
+        """参数变了：所有东西按最近一次画的位置、参数的当前值重画。"""
+        for item in self.items.values():
+            if "shown" in item.extra:
+                self.paint(item, item.extra["shown"], item.label)
+        if self.mesh_on:
+            self.paint_mesh(self.mesh_shown)
+
     def paint(self, item: Item, pts: np.ndarray, label: Node | None = None) -> None:
-        """按数学坐标 pts 重画 item（箭头、点、多边形），名字 label 跟着挪；高亮的光晕跟着重画。"""
-        self._paint(item, pts, label)
+        """按数学坐标 pts 重画 item（箭头、点、多边形、线段、直线），名字 label 跟着挪；高亮的光晕跟着重画。"""
+        item.extra["shown"] = np.array(pts, dtype=float)
+        self._paint(item, self.shown(item, item.extra["shown"]), label)
         if "halo" in item.extra:
             sync_halo(item)
 
@@ -407,7 +439,9 @@ class Plane(Widget):
             lab.matrix = T.translate(*(P[0] + d / np.linalg.norm(d) * reach))
 
     def paint_mesh(self, m: np.ndarray) -> None:
-        """变换 m 下的整数网格线，裁在坐标范围里。"""
+        """变换 m 下的整数网格线，裁在坐标范围里（再乘上参数驱动的变形）。"""
+        self.mesh_shown = m
+        m = self.L() @ m
         box = tuple(v * UNIT for v in self.box)
         path = Path()
         if abs(np.linalg.det(m)) < 1e-6:
@@ -543,7 +577,7 @@ class Plane(Widget):
             new.set_style(opacity=0.0)
             self.labels.add(new)
             item.label = new
-            self.place_label(item, item.pts, new)  # 新节点还看不见，建动作时就能摆好
+            self.place_label(item, self.shown(item, item.pts), new)  # 新节点还看不见，建动作时就能摆好
             out: list[Animation] = [FadeTo(new, 1.0, 0.4)]
             if old is not None:
                 out.insert(0, FadeTo(old, 0.0, 0.3))
