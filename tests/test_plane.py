@@ -190,3 +190,26 @@ def test_lines_relabel_and_remove():
     assert opacity(p.items["l"].label) == 1.0
     run(p.action("remove", {"name": "l"}))
     assert "l" not in p.items
+
+
+
+def test_highlight_glows_follows_warps_and_goes_away():
+    p = plane(mesh=True)
+    run(p.action("vector", {"name": "a", "v": [2, 1]}) + p.action("point", {"name": "o", "at": [1, 1]}))
+    shaft = p.items["a"].node.children[0]
+    w0 = shaft.style.stroke_width
+    anims = p.action("highlight", {"name": ["a", "o"], "pulse": True})
+    halo = p.items["a"].extra["halo"][0]
+    assert opacity(halo) == 0.0 and shaft.style.stroke_width == w0  # 播放时才亮
+    run(anims)
+    assert opacity(halo) == pytest.approx(1.0) and shaft.style.stroke_width == pytest.approx(w0 * 1.6)
+    order = p.layer.children
+    assert order.index(halo) < order.index(p.items["a"].node)  # 光晕垫在箭头下面
+    run(p.action("warp", {"matrix": [[1, 1], [0, 1]]}))
+    glow_head = halo.children[1].path.subpaths[0].points()[0]
+    assert tuple(np.round(glow_head, 6)) == (3.0, 1.0)  # 光晕跟着箭头尖走：(2, 1) → (3, 1)
+    dot_halo = p.items["o"].extra["halo"][0].children[0]
+    assert tuple(np.round(dot_halo.matrix[:2, 2], 6)) == (2.0, 1.0)  # 点 (1, 1) → (2, 1)
+    run(p.action("unhighlight", {}))
+    assert opacity(halo) == 0.0 and shaft.style.stroke_width == pytest.approx(w0)
+    assert "halo" not in p.items["a"].extra and "halo" not in p.items["o"].extra

@@ -30,7 +30,7 @@
   示例 `scene-spec/examples/ep11.scene.yaml`（剪开挪过去）、`ep20-fold.scene.yaml`（等腰直角三角形折两次，√2 无理）。
 - **坐标平面** `mx/plane.py`（`plane`）：淡网格 + 坐标轴（`complex: true` 时是复平面，纵轴写 i、2i），画在上面的东西都有名字：
   `vector`（分量 v、尾巴 at）、`slide`（平移，`copy` 时滑过去的是虚线副本：首尾相接）、`point`（`fixed` 时钉在画面上不跟着变）、`shape`（填色多边形）、`segment`（线段）、`line`（直线：`dir` + 可选 `through`，不写 through 就是过原点的 span；或 `eq: [p, q, r]`；裁在坐标范围里，跟着变换走，特征向量在 warp 时一直躺在自己的 span 上）、
-  `rotate`（绕原点转，写了 name 时画出扫过的弧；不写 name 是整个平面转）、`scale`、`warp`（`mesh: true` 的彩色网格连同所有箭头按矩阵变形，和之前的复合）、`reset`、`relabel`、`remove`。
+  `rotate`（绕原点转，写了 name 时画出扫过的弧；不写 name 是整个平面转）、`scale`、`warp`（`mesh: true` 的彩色网格连同所有箭头按矩阵变形，和之前的复合）、`reset`、`relabel`、`highlight` / `unhighlight`（同色光晕 + 描边加粗，`pulse` 时跳两下，跟着变换走；标某一个东西用它，不用 mark 的金色方块）、`remove`。
   名字和刻度垫了底色，网格线不穿字。向量加法、乘 i 转 90°、矩阵变形（洞察 #32–#34）用。
 - **随机试验** `mx/chance.py`：随机数都来自 `scene_spec.chance`（`random.Random(seed)`），旁白里说的数用动作的 `expect` 写出来，检查器按同一个 seed 核对。
   `coin_flips`：抛硬币的频率折线（横轴对数刻度），`flip`（画到第 k 次，右上角写"正面 h/k"）、`runs`（再画几条别的 seed）、`band`（p ± 1/√k 的漏斗）；
