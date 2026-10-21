@@ -20,6 +20,9 @@ mesh: true 时另有一层彩色网格（mesh_role，默认 B）跟着 warp 变�
   （先做的在右边：warp A 再 warp B，结果是 BA）；纯旋转按角度转过去，其他矩阵按 (1−t)I + tM 渐变；
 - reset：整个平面变回原样（之前所有 warp 的逆）；
 - relabel {name, label}：换名字（旧的淡出、新的淡入，位置跟着箭头）；
+- highlight {name（一个或列表）, pulse（默认 false）}：给箭头、点、多边形加一圈同色的光晕，描边加粗 1.6 倍；
+  光晕跟着之后的 rotate / scale / warp 走；pulse: true 时亮起来跳两下。unhighlight {name（不写 = 全部）}：收掉。
+  标出平面上的某一个东西用它（内置的 mark 只能标整个组件或部件，画的是一块金色方块）；
 - remove {name}（一个或列表；不写 = 全部箭头、点、多边形和弧）：淡出。
 
 预计算的轨迹和参数曲线（定义里写，不是动作；几何见 track.py / scene_spec.curves）：
@@ -46,7 +49,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import numpy as np
-from moxian.anim import Animation, Draw, easing, updater
+from moxian.anim import Animation, Draw, Restyle, easing, updater
 from moxian.core import Group, Node, PathNode, Style
 from moxian.core import transform as T
 from moxian.path import Path, circle, polygon, rounded_rect
@@ -65,6 +68,9 @@ DOT = 0.1  # 点的半径
 PAD = 0.06  # 文字底色比字大出的边
 MOVER_REACH = (1.0, 1.8)  # 沿曲线走的点的名字躲刻度时试的距离（倍数）
 LABEL_GAP = 0.32  # 箭头名字离箭杆中点的距离
+HALO_W = 16  # 高亮光晕比原描边宽出的像素（1080p）
+HALO_OPACITY = 0.3
+HL_STROKE = 1.6  # 高亮时描边加粗的倍数
 LABEL_DIRS = {
     "u": (0.0, 1.0), "d": (0.0, -1.0), "l": (-1.0, 0.0), "r": (1.0, 0.0),
     "ul": (-0.71, 0.71), "ur": (0.71, 0.71), "dl": (-0.71, -0.71), "dr": (0.71, -0.71),
@@ -303,7 +309,12 @@ class Plane(Widget):
         return np.asarray(p, dtype=float) * UNIT
 
     def paint(self, item: Item, pts: np.ndarray, label: Node | None = None) -> None:
-        """按数学坐标 pts 重画 item（箭头、点、多边形），名字 label 跟着挪。"""
+        """按数学坐标 pts 重画 item（箭头、点、多边形），名字 label 跟着挪；高亮的光晕跟着重画。"""
+        self._paint(item, pts, label)
+        if "halo" in item.extra:
+            sync_halo(item)
+
+    def _paint(self, item: Item, pts: np.ndarray, label: Node | None = None) -> None:
         P = self.w(pts)
         if item.kind == "vector":
             shaft, head = item.node.children
@@ -493,17 +504,51 @@ class Plane(Widget):
             if old is not None:
                 out.insert(0, FadeTo(old, 0.0, 0.3))
             return out
+        if act == "highlight":
+            out = []
+            for item in self.names(args["name"]):
+                out += self.highlight(item, bool(args.get("pulse", False)))
+            return out
+        if act == "unhighlight":
+            value = args.get("name")
+            items = [i for i in self.items.values() if "halo" in i.extra] if value is None else self.names(value)
+            return [a for item in items for a in self.unhighlight(item)]
         if act == "remove":
             value = args.get("name")
             items = list(self.items.values()) if value is None else self.names(value)
             out = []
             for item in items:
+                if "halo" in item.extra:
+                    out += self.unhighlight(item)
                 out.append(FadeTo(item.node, 0.0, 0.4))
                 if item.label is not None:
                     out.append(FadeTo(item.label, 0.0, 0.4))
                 del self.items[item.name]
             return out
         raise KeyError(f"组件 {self.name} 没有动作 {act}")
+
+    def highlight(self, item: Item, pulse: bool) -> list[Animation]:
+        """光晕：item 每一片路径的同色宽描边（30% 不透明），垫在 item 下面；item 自己的描边加粗。"""
+        color = self.theme.ink(item.extra.get("role") or {"point": "HL", "shape": "C"}.get(item.kind, "A"))
+        leaves = [n for n, _m, _s in item.node.walk() if isinstance(n, PathNode)]
+        halo = Group(*[PathNode(path=Path(), style=Style(
+            stroke=color, stroke_width=(n.style.stroke_width if n.style.stroke else 0.0) + HALO_W, stroke_opacity=HALO_OPACITY,
+            fill=color if n.style.fill and item.kind != "shape" else None, fill_opacity=HALO_OPACITY)) for n in leaves],
+            name=f"{item.name}~halo")
+        halo.set_style(opacity=0.0)
+        self.layer.children.insert(self.layer.children.index(item.node), halo)
+        item.extra["halo"] = (halo, leaves)
+        sync_halo(item)
+        widths = {id(n): n.style.stroke_width for n in leaves}
+        item.extra["widths"] = widths
+        out: list[Animation] = [_Pulse(halo, 1.2) if pulse else FadeTo(halo, 1.0, 0.4)]
+        out += [Restyle(n, 0.4, stroke_width=widths[id(n)] * HL_STROKE) for n in leaves if n.style.stroke]
+        return out
+
+    def unhighlight(self, item: Item) -> list[Animation]:
+        halo, leaves = item.extra.pop("halo")
+        widths = item.extra.pop("widths")
+        return [FadeTo(halo, 0.0, 0.3)] + [Restyle(n, 0.3, stroke_width=widths[id(n)]) for n in leaves if n.style.stroke]
 
     def transform(self, m: np.ndarray, items: list[Item], whole: bool) -> list[Animation]:
         f = tween_matrix(m)
@@ -556,6 +601,26 @@ class Plane(Widget):
             out.append(_Late(FadeTo(lab, 1.0, 0.4), 1.2))
         self.items[node.name] = Item("arc", node.name, np.zeros((1, 2)), node, lab)
         return out
+
+
+def sync_halo(item: Item) -> None:
+    """光晕的每一片照着 item 对应那片路径的当前几何（含点的平移）重画。"""
+    halo, leaves = item.extra["halo"]
+    mats = {id(n): m for n, m, _s in item.node.walk() if isinstance(n, PathNode)}
+    for glow, leaf in zip(halo.children, leaves, strict=True):
+        glow.path = leaf.path
+        glow.matrix = mats[id(leaf)]
+
+
+class _Pulse(Animation):
+    """光晕亮起来跳两下：不透明度 0 → 1 → 0.35 → 1 → 0.35 → 1。"""
+
+    def __init__(self, node: Node, duration: float):
+        super().__init__(node, duration, easing.linear)
+
+    def interpolate(self, alpha: float) -> None:
+        a = min(1.0, alpha * 4) if alpha < 0.25 else 0.675 + 0.325 * math.cos((alpha - 0.25) / 0.75 * 4 * math.pi)
+        self.node.set_style(opacity=a)
 
 
 def place(node: Node, at: np.ndarray, toward: np.ndarray) -> None:
