@@ -21,10 +21,19 @@ def fit(node: Node, region: Region, max_width: float | None = None, max_height: 
     return node
 
 
-def pin_top(node: Node) -> Node:
-    node.scale_to_fit_width(PIN_WIDTH)
-    if node.height > PIN_MAX_HEIGHT:
-        node.scale_to_fit_height(PIN_MAX_HEIGHT)
+def pin_top(node: Node, size: dict | None = None) -> Node:
+    """钉在顶上的题卡，水平居中。不写 size 时撑满题卡宽度 PIN_WIDTH（高度不超过 PIN_MAX_HEIGHT）；
+    写了 size 时保持字号层级的自然大小，只在比 max_width × PIN_WIDTH、max_height × PIN_MAX_HEIGHT 大时缩小
+    （size: {max_width: 1} = 自然大小，宽不超过题卡）。"""
+    if size:
+        mw, mh = PIN_WIDTH * size.get("max_width", 1.0), PIN_MAX_HEIGHT * size.get("max_height", 1.0)
+        if node.width > mw:
+            node.scale_to_fit_width(mw)
+    else:
+        node.scale_to_fit_width(PIN_WIDTH)
+        mh = PIN_MAX_HEIGHT
+    if node.height > mh:
+        node.scale_to_fit_height(mh)
     node.to_edge(UP, margin=PIN_TOP_MARGIN)
     return node.shift([-node.center()[0], 0.0])
 
@@ -33,7 +42,7 @@ def place(node: Node, definition: dict, refs: dict[str, BBox], region: Region | 
           stack_below: float = 0.0) -> Node:
     """refs：字段名 → 被引用对象在世界坐标里的包围盒。"""
     if definition.get("pin") == "top":
-        return pin_top(node)
+        return pin_top(node, definition.get("size"))
     if "at" in definition:
         return node.move_to(definition["at"])
     region = region or regions()["stage"]
