@@ -194,32 +194,56 @@ class SeqCells(Widget):
 # ---------- 步骤胶囊 ----------
 
 class Chips(Widget):
+    """步骤胶囊。reveal: true 时胶囊先不露出来，focus 到第几个就露到第几个（讲一个、标一个，
+    不提前把整条解题路线摆给学生看）；`reveal` 动作可以一次露出若干个（例如回放完整证明时全部亮出）。"""
+
     name = "chips"
 
     def build(self) -> Built:
         t = self.theme
         self.ink = t.color(self.definition.get("role"), t.A)
+        self.reveal_mode = bool(self.definition.get("reveal", False))
         self.bgs: list[PathNode] = []
         self.labels: list[Node] = []
+        self.shown: list[bool] = []
         chips = []
         for text in self.definition["items"]:
             label = mtext(text, 22, self.ink)
             h = max(0.5, label.height + 0.28)
             bg = PathNode(path=rounded_rect(label.width + 0.45, h, h / 2), style=Style(fill=t.CARD))
             bg.move_to(label.center())
-            chips.append(Group(bg, label))
+            chip = Group(bg, label)
+            if self.reveal_mode:
+                chip.set_style(opacity=0.0)
+            chips.append(chip)
             self.bgs.append(bg)
             self.labels.append(label)
+            self.shown.append(not self.reveal_mode)
         arrange(chips, RIGHT, gap=0.3)
         return Built(Group(*chips), items=chips)
 
-    def focus(self, index: int | None) -> list[Animation]:
+    def _reveal(self, start: int, stop: int) -> list[Animation]:
+        """露出下标在 [start, stop) 里还没露出的胶囊。"""
         anims = []
+        for i in range(max(0, start), min(stop, len(self.shown))):
+            if not self.shown[i]:
+                self.shown[i] = True
+                anims.append(fade_in(self.built.items[i], 0.4, shift=(0.0, -0.08)))
+        return anims
+
+    def focus(self, index: int | None) -> list[Animation]:
+        anims = self._reveal(0, index + 1) if (self.reveal_mode and index is not None) else []
         for i, (bg, label) in enumerate(zip(self.bgs, self.labels)):
             on = i == index
             anims.append(Restyle(bg, 0.4, fill=self.ink if on else self.theme.CARD))
             anims.append(Restyle(label, 0.4, fill=self.theme.BG if on else self.ink))
         return anims
+
+    def action(self, act: str, args: dict) -> list[Animation]:
+        if act != "reveal":
+            raise KeyError(act)
+        start, stop = parse_slice(args.get("index", f"0:{len(self.shown)}"))
+        return self._reveal(start, stop)
 
 
 # ---------- 想一想框 ----------
@@ -407,6 +431,8 @@ REGISTRY: dict[str, type[Widget]] = {
     "coin_flips": __import__("animind_kit.mx.chance", fromlist=["CoinFlips"]).CoinFlips,  # 随机试验在 chance.py（频率折线）
     "galton": __import__("animind_kit.mx.chance", fromlist=["Galton"]).Galton,  # （高尔顿板）
     "outcomes": __import__("animind_kit.mx.chance", fromlist=["Outcomes"]).Outcomes,  # （样本空间方格，条件概率）
+    "seq_table": __import__("animind_kit.mx.table", fromlist=["SeqTable"]).SeqTable,  # 数例表在 table.py（竞赛题"先试几步"，一列列露）
+    "line_chart": __import__("animind_kit.mx.chart", fromlist=["LineChart"]).LineChart,  # 折线图在 chart.py（几个量随项数的升降）
 }
 
 

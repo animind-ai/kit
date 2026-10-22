@@ -11,7 +11,8 @@
 - **主题** `theme.py`：palette 的语义角色 → 颜色，以及派生的卡片底色、mark 垫色、浅底上的结论墨色。色值只来自 [animind-ai/palette](https://github.com/animind-ai/palette)。
 - **文字** `text.py`：中文用 Noto Sans CJK SC（思源黑体，开源），公式走 xelatex + ctex；把 `[片段]{#id .角色}` 标注渲染成可单独指向、单独上色的段。
 - **布局** `layout.py`：top / stage / side / footer 四个区域，`in`、`below`、`over`、`pin` 等约束；没人用的区域让给主讲区；渲染后做出框和重叠检查。
-- **组件**：题卡（可回填答案）、步骤胶囊、想一想框、总结卡、差分表（derive / extend / triangle）、对齐等式组 `equations`、数列格子 `seq_cells`（fill）。墨线版在 `mx/`；Manim 版 `widgets/` 只有前五个，所以只能渲染 p01 这样的内容。
+- **组件**：题卡（可回填答案）、步骤胶囊（`reveal: true` 时讲到哪一段才露哪一个，`reveal` 动作一次露出若干个）、想一想框、总结卡、差分表（derive / extend / triangle）、对齐等式组 `equations`、数列格子 `seq_cells`（fill）、数例表 `seq_table`（`mx/table.py`：几行带行头的格子，`show table[i]` 一列列露，`shade {row, col}` 给一格垫色）、折线图 `line_chart`（`mx/chart.py`：几个量随项数的升降，`show chart.series[k]` 一条条露，`ring {series, index}` 圈出一点）。墨线版在 `mx/`；Manim 版 `widgets/` 只有前五个，所以只能渲染 p01 这样的内容。
+- **留白提示条**（`backends/moxian_backend.py` 的 `_pause_bar`）：`pause: {type: think | predict, hold: N}` 的 beat，旁白说完后底部的胶囊让开，出一条「想一想 · 可以按暂停」+ 倒计时进度条，hold 秒缩完再换回来（英文稿自动用英文）。固定几秒永远不合每个人的思考速度（2026-10-21 学生访谈），所以留白只是提示，真要想就在播放器里按暂停。
 - **数轴** `mx/numberline.py`：跳跃（可从任意点起跳、几段接着走、换颜色、不标计数）、垫色（可几段并存）、带角色的点，
   以及轴下方和 0..end 等长的分数条（`bars: true` 预留位置；`bar` / `fill` / `group` 动作）；`unit` 调一个单位的长度。
   从 0 出发的箭头（`arrows: true`）：`arrow` 画、`stretch` 拉长（乘正数）、`turn` 绕 0 转半圈（乘 −1），负负得正用。

@@ -39,7 +39,7 @@ from moxian.clip import ClipNode
 from moxian.core import RIGHT, BBox, Camera, Group, Node, PathNode, Style, parent_matrix_of
 from moxian.encode import render_video
 from moxian.path import Path as VPath
-from moxian.path import line, rounded_rect
+from moxian.path import line, rect, rounded_rect
 from moxian.render import SkiaRenderer
 from moxian.text import Tex, Text
 from scene_spec import curves as spec_curves
@@ -52,7 +52,7 @@ from .. import analysis, beat_cache, lint, segments, subtitles, timing
 from ..mx import layout, scan, widgets
 from ..mx.readout import Readout
 from ..mx.shape import build_shape
-from ..mx.text import SCALE, mmath, rich
+from ..mx.text import SCALE, mmath, mtext, rich
 from ..regions import Region
 from ..theme import Theme
 
@@ -73,6 +73,14 @@ def side_floor(definition: dict) -> str:
     return "side_note" if definition.get("level") == "caption" else "side"
 CUE_LATE = 0.4
 SIZES = {"l": (854, 480, 15), "m": (1280, 720, 30), "h": (1920, 1080, 30)}
+# 暂停提示条（pause: think / predict 的留白）：底部一条「可以按暂停」+ 倒计时进度条。固定几秒永远不合每个人的
+# 思考速度（2026-10-21 学生访谈），所以留白只是提示——真要想，学生在播放器里自己按暂停。
+PAUSE_LABELS = {
+    "think": {"zh": "想一想 · 可以按暂停", "en": "Think it over · pause if you like"},
+    "predict": {"zh": "先猜一猜 · 可以按暂停", "en": "Make a guess · pause if you like"},
+}
+PAUSE_BAR_WIDTH = 4.6
+PAUSE_LEAD = 0.5  # 旁白结束前多久把底部的胶囊让开、提示条淡入
 # 中途采样（标了 sample_alphas 的连续动画播到一半之类的时刻）的问题怎么算：
 # - clip（字伸出画面）、overlap（字压字）：错误，和结束帧的问题一样计入版式问题；
 # - cross（线扫过字）：只提醒，不计入版式问题（割线转向、平面旋转时线从字上扫过去是常事）；
@@ -115,6 +123,20 @@ class _Overlay(Animation):
 
     def finish(self) -> None:
         self.inner.finish()
+
+
+class _Shrink(Animation):
+    """倒计时进度条：一条从左端固定、右端往回缩的横条，hold 秒缩完。"""
+
+    def __init__(self, node: PathNode, width: float, height: float, left: float, y: float, duration: float):
+        super().__init__(node, duration, easing.linear)
+        self.w, self.h, self.left, self.y = width, height, left, y
+
+    def interpolate(self, alpha: float) -> None:
+        w = max(1e-3, self.w * (1 - alpha))
+        self.node.path = rect(w, self.h)
+        self.node.matrix = np.eye(3)
+        self.node.move_to([self.left + w / 2, self.y])
 
 
 class _Detach(Animation):
@@ -239,6 +261,7 @@ class MoxianCompiler:
         self.dimmed: dict[str, list[Node]] = {}
         self.marks: dict[str, Node] = {}
         self.decorations: list[tuple[str, str, Node]] = []
+        self.pause_bars: list[Node] = []  # 留白时底部的提示条（每个有留白的 beat 一条，用完留在树里、透明）
         # 叠加层 → (挂在哪个节点下, 跟随的目标节点, 叠加层相对目标的世界矩阵)
         self.followers: dict[int, tuple[Node, Node, Node, np.ndarray]] = {}
         self.ignore_pairs: set[frozenset[str]] = set()
@@ -690,6 +713,11 @@ class MoxianCompiler:
         }
         # 暂停（预测、想一想）接在旁白之后：画面定住 hold 秒，音轨补同样长的静音
         hold = float(beat["pause"].get("hold", 2)) if "pause" in beat else 0.0
+        if hold > 0 and beat["pause"].get("type") in PAUSE_LABELS:
+            # 留白期间底部换成提示条（逻辑时刻 = 成片时刻 − 前面定格的总长）
+            t0 = max(spoken - frozen, prev_end)
+            for t, anim in self._pause_bar(beat["pause"], t0, hold):
+                inner.add(t, anim)
         until = max(spoken + hold, tl.end + 0.3, 1.0)
         # 采样落在渲染真正会画的那一帧（不早于动作结束的第一帧），inspect 和 render 看到的是同一个画面
         last = round(until * self.fps) / self.fps
@@ -701,6 +729,41 @@ class MoxianCompiler:
         samples.append(_Sample(last, "结束"))
         samples += self._mid_samples(inner, marked, frame, {s.time for s in samples})
         return _Plan(inner, tl, narration, until, snapshots, sorted(samples, key=lambda s: s.time))
+
+    def _pause_bar(self, pause: dict, t0: float, hold: float) -> list[tuple[float, Animation]]:
+        """留白的画面：底部的胶囊先让开，提示条淡入，进度条 hold 秒缩完，再换回来。返回 (逻辑时刻, 动画)。"""
+        t = self.t
+        lang = "en" if str(pause.get("prompt", "")).isascii() else "zh"
+        label = mtext(PAUSE_LABELS[pause["type"]][lang], 26, t.HL_INK)
+        pill_w, pill_h = label.width + 0.6, max(0.56, label.height + 0.26)
+        pill = PathNode(path=rounded_rect(pill_w, pill_h, pill_h / 2), style=Style(fill=t.CARD))
+        bar_h = 0.12
+        track = PathNode(path=rounded_rect(PAUSE_BAR_WIDTH, bar_h, bar_h / 2), style=Style(fill=t.CARD))
+        fill = PathNode(path=rect(PAUSE_BAR_WIDTH, bar_h), style=Style(fill=t.HL_INK))
+        cx, cy = layout.regions()["footer"].center
+        total = pill_w + 0.35 + PAUSE_BAR_WIDTH
+        x = cx - total / 2
+        pill.move_to([x + pill_w / 2, cy])
+        label.move_to([x + pill_w / 2, cy])
+        left = x + pill_w + 0.35
+        track.move_to([left + PAUSE_BAR_WIDTH / 2, cy])
+        fill.move_to([left + PAUSE_BAR_WIDTH / 2, cy])
+        bar = Group(pill, label, track, fill, name="pause_bar")
+        bar.set_style(opacity=0.0)
+        self.root.add(bar)
+        self.pause_bars.append(bar)
+        others = [self.visible[k] for k in self.visible if k in self.objects and self.region_of(k) == "footer"]
+        out: list[tuple[float, Animation]] = []
+        lead = min(PAUSE_LEAD, t0)
+        for node in others:
+            out.append((t0 - lead, fade_out(node, 0.3)))
+        out.append((t0 - lead + 0.2, fade_in(bar, 0.3)))
+        run = max(0.3, hold - 0.4)
+        out.append((t0, _Shrink(fill, PAUSE_BAR_WIDTH, bar_h, left, cy, run)))
+        out.append((t0 + run, fade_out(bar, 0.3)))
+        for node in others:
+            out.append((t0 + run, fade_in(node, 0.3)))
+        return out
 
     def _sync_clips(self, clip_shows: list[tuple[str, float]], freezes) -> None:
         """片段的 start 换成这个 beat 的时钟（renderer.time 每个 beat 都从 0 起）。
