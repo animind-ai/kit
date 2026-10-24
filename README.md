@@ -36,7 +36,7 @@
   几何和检查都来自 `scene_spec.dissect`。`fold {cut, flap, back?}`：沿一刀 `line` 切法的切线把 `flap` 那几块翻到另一侧（没切过就先切）——
   翻的那侧在垂直于折痕的方向从 1 压到 −1，中途变暗，`back` 是翻过来露出的背面颜色，落下后放在最上层；折纸、轴对称、角平分线用。
   示例 `scene-spec/examples/ep11.scene.yaml`（剪开挪过去）、`ep20-fold.scene.yaml`（等腰直角三角形折两次，√2 无理）。
-- **坐标平面** `mx/plane.py`（`plane`）：淡网格 + 坐标轴（`complex: true` 时是复平面，纵轴写 i、2i），画在上面的东西都有名字：
+- **坐标平面** `mx/plane.py`（`plane`）：淡网格 + 坐标轴（`complex: true` 时是复平面，纵轴写 i、2i；`axes: false` 不画轴，只当 Venn 图 / 自由向量的画布），画在上面的东西都有名字：
   `vector`（分量 v、尾巴 at）、`slide`（平移，`copy` 时滑过去的是虚线副本：首尾相接）、`point`（`fixed` 时钉在画面上不跟着变）、`shape`（填色多边形）、`segment`（线段）、`line`（直线：`dir` + 可选 `through`，不写 through 就是过原点的 span；或 `eq: [p, q, r]`；裁在坐标范围里，跟着变换走，特征向量在 warp 时一直躺在自己的 span 上）、
   `rotate`（绕原点转，写了 name 时画出扫过的弧；不写 name 是整个平面转）、`scale`、`warp`（`mesh: true` 的彩色网格连同所有箭头按矩阵变形，和之前的复合）、`reset`、`relabel`、`highlight` / `unhighlight`（同色光晕 + 描边加粗，`pulse` 时跳两下，跟着变换走；标某一个东西用它，不用 mark 的金色方块）、`remove`；定义里写 `matrix: [[a, b], [c, d]]`（数或参数表达式）时整个平面再按它变形，`tween` 参数时连续地跟着变（行列式、矩阵元素用 `readout` 显示）。
   名字和刻度垫了底色，网格线不穿字。向量加法、乘 i 转 90°、矩阵变形（洞察 #32–#34）用。

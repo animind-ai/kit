@@ -48,6 +48,14 @@ def test_allow_empty_plane_keeps_reference_visible():
     assert opacity(p.grid) == 1.0 and opacity(p.axes) == 1.0
 
 
+def test_axes_off_draws_no_axis_even_after_content():
+    p = plane(axes=False, numbers=True)
+    assert p.axes.children == []
+    run(p.action("shape", {"name": "A", "points": [[0, 0], [1, 0], [1, 1]]}))
+    assert p.axes.children == []
+    assert p.grid.children and opacity(p.grid) == 1.0
+
+
 def test_vector_grows_at_playback():
     p = plane()
     anims = p.action("vector", {"name": "a", "v": [3, 1], "label": r"\vec a"})

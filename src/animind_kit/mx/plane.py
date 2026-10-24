@@ -1,6 +1,7 @@
 """坐标平面（墨线实现）：向量的首尾相接、复数乘 i 转 90°、矩阵把整个平面变形。
 
-plane：x、y 是坐标范围（整数 [起, 止]，要含 0），画淡的单位网格（grid，默认 true）、坐标轴和整数刻度（numbers，默认 true）。
+plane：x、y 是坐标范围（整数 [起, 止]，要含 0），画淡的单位网格（grid，默认 true）、坐标轴（axes，默认 true）和整数刻度（numbers，默认 true）。
+axes: false 时完全不画坐标轴、刻度和轴名（Venn 图、自由向量这类不需要坐标系的画面），只留网格（也可一并 grid: false）。
 如果平面没有内容动作，坐标轴和网格默认隐藏；需要故意使用空背景时写 allow_empty: true。
 complex: true 时纵轴刻度写成 i、2i、−i（复平面），轴名默认「实轴」「虚轴」；axis_labels 可改两个轴名（字符串，可混排公式）。
 mesh: true 时另有一层彩色网格（mesh_role，默认 B）跟着 warp 变形，每一帧把变形后的网格线裁在坐标范围里，
@@ -217,14 +218,19 @@ class Plane(Widget):
         if self.mesh_on:
             self.paint_mesh(self.M)
         self.axes = Group(name="axes")
+        axes_on = d.get("axes", True)
+        numbers = numbers and axes_on
+        if not axes_on:
+            margin = 0.35
         ax = Path().move_to(x0 * U - 0.2, 0.0).line_to(x1 * U + 0.2, 0.0)
         ax.move_to(0.0, y0 * U - 0.2).line_to(0.0, y1 * U + 0.2)
-        self.axes.add(PathNode(path=ax, style=Style(stroke=t.FG, stroke_width=3)))
         heads = Path()
         for tip, (ux, uy) in (((x1 * U + 0.2, 0.0), (1.0, 0.0)), ((0.0, y1 * U + 0.2), (0.0, 1.0))):
             heads.move_to(tip[0] + ux * 0.18, tip[1] + uy * 0.18)
             heads.line_to(tip[0] - uy * 0.09, tip[1] + ux * 0.09).line_to(tip[0] + uy * 0.09, tip[1] - ux * 0.09).close()
-        self.axes.add(PathNode(path=heads, style=Style(fill=t.FG, stroke=t.FG, stroke_width=1)))
+        if axes_on:
+            self.axes.add(PathNode(path=ax, style=Style(stroke=t.FG, stroke_width=3)))
+            self.axes.add(PathNode(path=heads, style=Style(fill=t.FG, stroke=t.FG, stroke_width=1)))
         if numbers:
             for x in range(int(x0), int(x1) + 1):
                 if x != 0:
@@ -239,7 +245,7 @@ class Plane(Widget):
         box_l, box_r = x0 * U - margin, x1 * U + margin
         box_b, box_t = y0 * U - margin, y1 * U + margin
         names = d.get("axis_labels") or (["实轴", "虚轴"] if self.complex else None)
-        if names:
+        if names and axes_on:
             xl = self.padded_rich(names[0], t.DIM, (x1 * U + 0.45, 0.0), (1.0, 0.0))
             yl = self.padded_rich(names[1], t.DIM, (0.0, y1 * U + 0.45), (0.0, 1.0))
             self.axes.add(xl, yl)
