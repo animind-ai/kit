@@ -36,6 +36,18 @@ def test_registered():
     assert widgets.lookup("plane") is Plane
 
 
+def test_empty_plane_hides_reference_until_content_action():
+    p = plane()
+    assert opacity(p.grid) == 0.0 and opacity(p.axes) == 0.0
+    run(p.action("vector", {"name": "a", "v": [1, 0]}))
+    assert opacity(p.grid) == 1.0 and opacity(p.axes) == 1.0
+
+
+def test_allow_empty_plane_keeps_reference_visible():
+    p = plane(allow_empty=True)
+    assert opacity(p.grid) == 1.0 and opacity(p.axes) == 1.0
+
+
 def test_vector_grows_at_playback():
     p = plane()
     anims = p.action("vector", {"name": "a", "v": [3, 1], "label": r"\vec a"})

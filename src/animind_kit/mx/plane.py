@@ -1,6 +1,7 @@
 """坐标平面（墨线实现）：向量的首尾相接、复数乘 i 转 90°、矩阵把整个平面变形。
 
 plane：x、y 是坐标范围（整数 [起, 止]，要含 0），画淡的单位网格（grid，默认 true）、坐标轴和整数刻度（numbers，默认 true）。
+如果平面没有内容动作，坐标轴和网格默认隐藏；需要故意使用空背景时写 allow_empty: true。
 complex: true 时纵轴刻度写成 i、2i、−i（复平面），轴名默认「实轴」「虚轴」；axis_labels 可改两个轴名（字符串，可混排公式）。
 mesh: true 时另有一层彩色网格（mesh_role，默认 B）跟着 warp 变形，每一帧把变形后的网格线裁在坐标范围里，
 看起来是整个平面在变（动作 warp）；原来的淡网格留在下面当参照。
@@ -191,6 +192,7 @@ class Plane(Widget):
         (x0, x1), (y0, y1) = d["x"], d["y"]
         self.box = (float(x0), float(y0), float(x1), float(y1))
         self.complex = bool(d.get("complex", False))
+        self.reference_visible = bool(d.get("allow_empty", False))
         node = Group(name=self.obj_id)
         U = UNIT
         numbers = d.get("numbers", True)
@@ -250,6 +252,11 @@ class Plane(Widget):
         # 曲线垫在坐标轴下面（从刻度的底色下面过，不穿过字）；沿曲线走的点在箭头上面、名字下面
         node.add(self.grid, self.mesh, Group(*curves, name="curves"), self.axes, self.layer, Group(*movers, name="movers"),
                  self.labels)
+        if not self.reference_visible and not (d.get("curves") or d.get("points")):
+            self.grid.set_style(opacity=0.0)
+            self.axes.set_style(opacity=0.0)
+        else:
+            self.reference_visible = True
         self.items: dict[str, Item] = {}
         if self.track_params:
             updater(node, lambda _n: self.paint_tracks(), *(self.params[n] for n in sorted(self.track_params)))
@@ -525,6 +532,10 @@ class Plane(Widget):
 
     def action(self, act: str, args: dict) -> list[Animation]:
         self.acted = True
+        if not self.reference_visible and act in {"vector", "slide", "point", "shape", "segment", "line", "rotate", "scale", "warp", "relabel"}:
+            self.reference_visible = True
+            self.grid.set_style(opacity=1.0)
+            self.axes.set_style(opacity=1.0)
         t = self.theme
         if act == "vector":
             item = self.new_vector(args["name"], args.get("at", (0, 0)), args["v"], args.get("role"), args.get("label"),
