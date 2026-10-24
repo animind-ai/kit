@@ -48,6 +48,11 @@ def test_allow_empty_plane_keeps_reference_visible():
     assert opacity(p.grid) == 1.0 and opacity(p.axes) == 1.0
 
 
+def test_plane_with_curves_keeps_reference_visible():
+    p = plane(curves=[{"x": "t", "y": "t", "domain": [0, 1]}])
+    assert opacity(p.grid) == 1.0 and opacity(p.axes) == 1.0
+
+
 def test_axes_off_draws_no_axis_even_after_content():
     p = plane(axes=False, numbers=True)
     assert p.axes.children == []
