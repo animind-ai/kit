@@ -369,3 +369,22 @@ def test_flip_with_lines_highlights_and_live_matrix(live):
     if k is not None:
         k.set(0.5)
         assert ends(p, "s").tolist() == [[0, 0], [2, 2]] and tip(p, "j").tolist() == [0.5, 1.0]
+
+
+def test_shape_name_can_be_reused_after_remove():
+    p = plane()
+    sq = [[0, 0], [1, 0], [1, 1]]
+    run(p.action("shape", {"name": "A", "points": sq}))
+    run(p.action("shape", {"name": "B", "points": sq}))
+    run(p.action("remove", {"name": ["A"]}))
+    run(p.action("shape", {"name": "A", "points": sq}))
+    run(p.action("shape", {"name": "C", "points": sq}))
+    run(p.action("highlight", {"name": "A"}))  # 找节点位置要按身份，不能用 ==（同名旧节点会比到 numpy 矩阵）
+    assert "A" in p.items and "C" in p.items
+
+
+def test_chinese_label_uses_rich_text():
+    p = plane(axes=False, grid=False)
+    run(p.action("point", {"name": "d", "at": [1, 1], "label": "周一"}))
+    run(p.action("shape", {"name": "s", "points": [[0, 0], [2, 0], [2, 2]], "label": "按钮 $A$"}))
+    assert p.items["d"].label.bbox() is not None and p.items["s"].label.bbox() is not None

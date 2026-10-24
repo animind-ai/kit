@@ -69,7 +69,7 @@ from moxian.path import Path, circle, polygon, rounded_rect
 
 from .dissect import dashed
 from .dots import FadeTo, reserve
-from .text import mmath, rich
+from .text import label_text, mmath, rich
 from .track import Track, polyline, scalar
 from .widgets import Built, Widget
 
@@ -351,7 +351,7 @@ class Plane(Widget):
         return g
 
     def label_node(self, tex: str, color: str) -> Group:
-        body = mmath(tex, self.label_size, color)
+        body = label_text(tex, self.label_size, color, self.theme)
         body.font_floor = self.label_floor
         bg = PathNode(path=rounded_rect(body.width + 2 * PAD, body.height + 2 * PAD, 0.06),
                       style=Style(fill=self.theme.BG, fill_opacity=0.92))
@@ -698,7 +698,7 @@ class Plane(Widget):
             fill=color if n.style.fill and item.kind != "shape" else None, fill_opacity=HALO_OPACITY)) for n in leaves],
             name=f"{item.name}~halo")
         halo.set_style(opacity=0.0)
-        self.layer.children.insert(self.layer.children.index(item.node), halo)
+        self.layer.children.insert(next(k for k, c in enumerate(self.layer.children) if c is item.node), halo)
         item.extra["halo"] = (halo, leaves)
         sync_halo(item)
         widths = {id(n): n.style.stroke_width for n in leaves}

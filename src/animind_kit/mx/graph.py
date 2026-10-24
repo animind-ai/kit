@@ -55,7 +55,7 @@ from scene_spec.expr import evaluate, free_names, parse
 from ..lint import crosses, segments_of
 from .readout import number
 from .scan import flatten
-from .text import mmath, mtext
+from .text import label_text, mmath, mtext
 from .track import Track, polyline
 from .widgets import Built, Widget
 
@@ -671,7 +671,7 @@ class Graph(Widget):
         """名字放在曲线末端 end（数学坐标）的旁边。"""
         (y0, y1) = self.yr
         x, y = end
-        lab = mmath(tex, self.LABEL, color)
+        lab = label_text(tex, self.LABEL, color, self.theme)
         right = np.array([0.15 + lab.width / 2, -0.05])
         if y > y1 - 0.08 * (y1 - y0):  # 顶到上沿：名字放在线的右下
             right[1] -= 0.35
@@ -700,7 +700,7 @@ class Graph(Widget):
         kids: list[Node] = [dot]
         lab = None
         if label:
-            lab = mmath(label, self.LABEL, color)
+            lab = label_text(label, self.LABEL, color, self.theme)
             v = np.array(LABEL_DIRS[direction] if isinstance(direction, str) else direction, dtype=float)
             v /= np.linalg.norm(v)
             lab.move_to(v * self._reach(lab, v))

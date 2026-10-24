@@ -28,6 +28,16 @@ def mmath(tex: str, size: float, color: str) -> Node:
     return math(tex, size * SCALE, color)
 
 
+CJK = re.compile(r"[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]")
+
+
+def label_text(tex: str, size: float, color: str, theme: Theme) -> Node:
+    """组件里的短标签：纯公式照旧走 LaTeX；含中文时按混排文字排（公式写在 $...$ 里），例如「周一」「按钮 $A$」。"""
+    if CJK.search(tex):
+        return rich(tex, theme, size=size, color=color).node
+    return mmath(tex, size, color)
+
+
 def mtex(tex: str, size: float, color: str) -> Node:
     return Tex(tex, size * SCALE, color)
 
