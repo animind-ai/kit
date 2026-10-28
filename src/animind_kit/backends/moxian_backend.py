@@ -1110,7 +1110,8 @@ class MoxianCompiler:
                 return [fade_in(node, dur, shift=(0.0, -0.1))], dur
             # 只显示对象里的某几项：第一次先把对象亮出来、其余项藏起来，之后只淡入指定的项
             self._open(sel.obj)
-            return [fade_in(n, dur, shift=(0.0, -0.1)) for n in self._members(node)], dur
+            calm = getattr(self.objects[sel.obj].widget, "calm", False)  # 几何图的部件原地淡入，不平移
+            return [fade_in(n, dur, shift=None if calm else (0.0, -0.1)) for n in self._members(node)], dur
         if act == "hide":
             sel = selectors.parse(action["target"])
             node = self.resolve(action["target"])
@@ -1336,6 +1337,11 @@ class MoxianCompiler:
     def _focus(self, target: str) -> list[Animation]:
         sel = selectors.parse(target)
         built = self.objects[sel.obj]
+        if built.widget and sel.part is not None and sel.index is None:
+            hook = getattr(built.widget, "focus_part", None)  # 组件自己强调一个部件（几何图：描强调色、其余调淡，不画方框）
+            custom = hook(sel.part) if hook else None
+            if custom is not None:
+                return custom
         if built.widget and sel.index is not None:
             custom = built.widget.focus(sel.index[0])
             if custom is not None:

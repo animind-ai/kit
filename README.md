@@ -41,6 +41,15 @@
   `vector`（分量 v、尾巴 at）、`slide`（平移，`copy` 时滑过去的是虚线副本：首尾相接）、`point`（`fixed` 时钉在画面上不跟着变）、`shape`（填色多边形）、`segment`（线段）、`line`（直线：`dir` + 可选 `through`，不写 through 就是过原点的 span；或 `eq: [p, q, r]`；裁在坐标范围里，跟着变换走，特征向量在 warp 时一直躺在自己的 span 上）、
   `rotate`（绕原点转，写了 name 时画出扫过的弧；不写 name 是整个平面转）、`scale`、`warp`（`mesh: true` 的彩色网格连同所有箭头按矩阵变形，和之前的复合）、`reset`、`relabel`、`highlight` / `unhighlight`（同色光晕 + 描边加粗，`pulse` 时跳两下，跟着变换走；标某一个东西用它，不用 mark 的金色方块）、`remove`；定义里写 `matrix: [[a, b], [c, d]]`（数或参数表达式）时整个平面再按它变形，`tween` 参数时连续地跟着变（行列式、矩阵元素用 `readout` 显示）。
   名字和刻度垫了底色，网格线不穿字。向量加法、乘 i 转 90°、矩阵变形（洞察 #32–#34）用。
+- **综合几何图** `mx/geometry.py`（`geometry`）：竞赛平面几何的证明图，没有坐标轴和网格。点由构造算出来，不手摆（求解器 `scene_spec.geometry.solve`，检查器和 kit 同一份代码）：
+  坐标 `[x, y]`（只给自由的起始点）、圆上按方向角 `{on: c, angle}`、线段上 `{on: [A, B], t}`、`mid`、垂足 `foot`、对称 `reflect`、
+  交点 `meet`（直线–直线、直线–圆、圆–圆；两个根时必须写 `not: A` / `near: P` / `far: P` / `index`）、`circumcenter` / `incenter` / `centroid` / `orthocenter`、
+  切点 `tangent`；直线可写 `[A, B]`、`{through: P, perp | parallel: [A, B]}`、`{tangent_at: A, circle: c}`。圆：圆心 + 半径 / 过一点、三点、直径。
+  `draw` 列表画线段、直线 / 射线（裁在图框里）、多边形、圆弧、角标（`arcs` 等角记号、90° 自动画直角方块）、等长记号 `tick`；`aux: true` 是新添的辅助线（暗红，`role: HL` 赤金）。
+  `assert` 写关键结论（共圆、共线、等长、等角、平行、垂直、点在圆上、三线共点），检查器和建组件时都按 1e-6 验算，不成立报 SS273、不渲染。
+  每个元素是一个部件：内置 `show fig.AB`（原地淡入）/ `hide` / `mark` / `focus fig.X`（描强调色、其余调淡）；组件动作 `draw`（沿线画出来）、`remove`、
+  `shade` / `unshade`（涂角、多边形、圆）、`ring` / `unring`、`highlight`、`dim {name | except}`、`restore`；图不动，只有反例场景可以用 `trace {point, to}` 让圆上 / 线段上的点滑动，依赖它的元素逐帧重算。
+  名字垫底色、自动避开所有线（同 graph 的避让）。完整写法见 `mx/geometry.py` 的文档字符串，示例 `scene-spec/examples/geometry.scene.yaml`（圆周角定理）。
 - **随机试验** `mx/chance.py`：随机数都来自 `scene_spec.chance`（`random.Random(seed)`），旁白里说的数用动作的 `expect` 写出来，检查器按同一个 seed 核对。
   `coin_flips`：抛硬币的频率折线（横轴对数刻度），`flip`（画到第 k 次，右上角写"正面 h/k"）、`runs`（再画几条别的 seed）、`band`（p ± 1/√k 的漏斗）；
   `galton`：高尔顿板，`drop`（一批球依次落下、在格子里堆起来）、`path`（描出某个球的左右路线）、`pascal`（格子底下写路径数）、`expect`（二项分布的期望台阶）、`flat`（"每格一样"的水平线）、`erase`；
