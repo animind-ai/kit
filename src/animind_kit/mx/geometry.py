@@ -59,7 +59,8 @@ fig:
   只是首选，被线穿过时自动换到附近的空位）、dot: false（只写名字不画点）；
 - angle：radius（数学单位）、arcs: 1/2/3（等角记号）、right: true/false（不写时 90° 自动画方块）、fill: true、label（写在角平分线上）；
 - segment：label（写在中点旁边，例如边长 a）；
-- circle：draw: false（只用来构造，不画出来）。
+- circle：draw: false（只用来构造，不画出来）；
+- 点也可以写 draw: false：只参与构造（例如题设里的辅助点在图框外），不画、不算进图框、不报 SS275，断言照样能用。
 
 ## 动作
 

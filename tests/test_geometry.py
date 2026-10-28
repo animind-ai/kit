@@ -198,3 +198,10 @@ def test_helpers():
     assert len(d.subpaths) == 4
     seg = clip_line(np.zeros(2), np.array([1.0, 0.0]), (-1, -1, 2, 1), ray=True)
     assert np.allclose(seg[0], [0, 0]) and np.allclose(seg[1], [2, 0])
+
+
+def test_construction_only_points_are_not_built_and_do_not_widen_the_box():
+    far = {**FIG["points"], "F": {"at": [20, 20], "draw": False}, "G": {"mid": ["O", "F"], "draw": False}}
+    g = Geometry("fig", {**FIG, "points": far, "draw": FIG["draw"] + [{"segment": ["O", "A"]}]}, T, {})
+    assert "F" not in g.built.parts and "G" not in g.built.parts
+    assert g.box == geo().box  # 图框和不加这两个点时一样
