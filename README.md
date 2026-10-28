@@ -45,6 +45,11 @@
   `coin_flips`：抛硬币的频率折线（横轴对数刻度），`flip`（画到第 k 次，右上角写"正面 h/k"）、`runs`（再画几条别的 seed）、`band`（p ± 1/√k 的漏斗）；
   `galton`：高尔顿板，`drop`（一批球依次落下、在格子里堆起来）、`path`（描出某个球的左右路线）、`pascal`（格子底下写路径数）、`expect`（二项分布的期望台阶）、`flat`（"每格一样"的水平线）、`erase`；
   `outcomes`：样本空间方格，`shade` / `unshade`、`strike` / `restore`（划掉被条件排除的格子）、`frame` / `unframe`（描出剩下的样本空间）。抛硬币频率、高尔顿板、条件概率（洞察 #36–#38）用。
+- **编程课组件** `mx/cs.py`（设计见 `scene-spec/docs/cs-lecture.md`）：`heading`（页眉，`retitle` 换标题）、`code`（pygments 高亮的代码面板，
+  `highlight` / `unhighlight` 整行底色、`point` 下一行箭头、`jump` 跳回的弯箭头，`spans` 指向一行里的一段）、`terminal`（深色输出面板，保留缩进，逐行 `show`）、
+  `call_stack`（`push` / `pop` / `note` / `unnote`）、`bindings`（名字 → 对象，`rebind` / `update`）、`card` / `cards` / `pill` / `bullets`、`flow`（格子上的流程图）、
+  `image`（位图，墨线的 `ImageNode`）、`queue`（排队的人，`ask` / `number`）。场景写 `style.layout: lecture`（顶上窄带放页眉、side 是右半边、
+  字号照 cs_style）、`style.fonts`、`theme: classroom`。示例 `scene-spec/examples/aie1001-l06-p1.scene.yaml`（AIE1001 第 6 讲第 1 部分）。
 - **墨线后端** `backends/moxian_backend.py` + `mx/`：对象树跨 beat 常驻，每个 beat 一条时间线；文字、组件、布局都在 `mx/` 里用墨线实现。动作按旁白句子和书签的时刻播放，画面跟不上旁白时打印 `CUE LATE`。
 - **Manim 后端** `backends/manim_backend.py` + `widgets/`：保留用于对照，每个 beat 一个 Scene。
 - **渲染** `render.py`：逐 beat 渲染，和旁白合成，拼成一支成片。
@@ -115,6 +120,18 @@ uv run animind-kit inspect ../scene-spec/examples/ep22.scene.yaml --no-sheets   
 同一个问题跨好几个 beat 时合并成一条。分镜图每张 6 格、按时间排，问题用红框圈出、标上同样的编号（虚线框是另一方）。`render` 跑的是同一套检查、同样的采样帧，问题列在"版式问题"里。确实是故意的情况，在对象上写 `allow`（见 scene-spec 设计稿 §6.4）。有问题时退出码 1。
 
 `--audio` 目录里要有每个 beat 的 `<beat>.wav` 和 `<beat>.timing.json`（voice 流水线的输出格式；没有音频的 beat 按每个汉字 0.22 秒估算时长）。`--quality` 取 `l` / `m` / `h`。
+
+#### 风格提示（v2）
+
+`style.layout: v2` 的场景，`inspect` / `render` 在同样的采样帧上再看三条写作规则（视觉规范 v2 §10），输出 `HINT` 行，日志末尾汇总一行 `风格提示（§10，只提示）：…`：
+
+| 提示 | 含义 |
+|---|---|
+| `accents` | 同一时刻 ≥ 2 种强调色满亮（不透明度 ≥ 0.9），列出每种颜色属于谁 |
+| `emphasis` | 同一时刻 ≥ 2 个对象带突出装饰（focus / mark / circle / underline） |
+| `undimmed` | 只有一个对象被突出，其它对象仍是满亮的强调色 |
+
+FG / DIM / 底色算安静色。提示**不计入版式问题、不影响退出码、不改画面**；其它模板不检查。实现在 `lint.style_hints()`，测试 `tests/test_style_hints.py`。新集尽量清到 0 条。
 
 #### 字号下限
 
@@ -293,6 +310,18 @@ It looks at every piece of text in the first frame after each batch of actions a
 The same problem across several beats is merged into one entry. Each storyboard sheet has 6 panels in time order; problems are circled in red with the same numbers (a dashed box marks the other party). `render` runs the same checks on the same sampled frames and lists problems under "layout problems" (版式问题). For intentional cases, write `allow` on the object (see scene-spec design doc §6.4). Exit code is 1 if there are problems.
 
 The `--audio` directory must contain `<beat>.wav` and `<beat>.timing.json` for each beat (the voice pipeline's output format; beats without audio are estimated at 0.22 s per Chinese character). `--quality` takes `l` / `m` / `h`.
+
+#### Style hints (v2)
+
+For scenes with `style.layout: v2`, `inspect` / `render` look at the same sample frames for three authoring rules (visual spec v2 §10) and print `HINT` lines, with a one-line summary at the end of the log.
+
+| Hint | Meaning |
+|---|---|
+| `accents` | two or more accent colours at full strength (opacity ≥ 0.9) at the same moment |
+| `emphasis` | two or more objects carry a highlight decoration (focus / mark / circle / underline) at the same moment |
+| `undimmed` | one object is highlighted while others still show full-strength accent colours |
+
+FG / DIM / background count as quiet colours. Hints are **not layout problems, do not change the exit code and do not change the picture**; other layouts are not checked. Implemented in `lint.style_hints()`, tested in `tests/test_style_hints.py`.
 
 #### Font size floors
 

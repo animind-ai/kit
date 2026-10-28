@@ -51,6 +51,7 @@ class Theme:
     CARD: str  # 卡片、胶囊的底
     MARK: str  # mark 动作垫在元素下面的淡色
     is_light: bool
+    DIM_INK: str = ""  # DIM 当文字用时的深色（v2：浅底上 DIM 对比度不够，主题给 C_DIM_INK 时换成它）
 
     def color(self, role: str | None, default: str | None = None) -> str:
         if role is None:
@@ -58,9 +59,11 @@ class Theme:
         return getattr(self, role)
 
     def ink(self, role: str | None) -> str:
-        """文字用色：HL 在浅底上换成 HL_INK。"""
+        """文字用色：HL 在浅底上换成 HL_INK；主题给了 DIM_INK 时，DIM 文字换成它。"""
         if role == "HL":
             return self.HL_INK
+        if role == "DIM" and self.DIM_INK:
+            return self.DIM_INK
         return self.color(role)
 
     def fill_opacity(self) -> float:
@@ -95,9 +98,10 @@ def theme(name: str = "paper") -> Theme:
         NO=p["C_NO"],
         DIM=p["C_DIM"],
         HL_INK=hl_ink,
-        CARD=blend(fg, bg, 0.06),
+        CARD=p.get("C_CARD", blend(fg, bg, 0.06)),
         MARK=blend(p.get("C_HL_MARK", p["C_HL"]), bg, 0.45 if light else 0.35),
         is_light=light,
+        DIM_INK=p.get("C_DIM_INK", ""),
     )
 
 

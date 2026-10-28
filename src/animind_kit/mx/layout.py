@@ -112,14 +112,15 @@ def clamp(node: Node, region: Region) -> Node:
     return node
 
 
-def check(visible: dict[str, Node], ignore_pairs: set[frozenset[str]], pinned: set[str] = frozenset()) -> list[str]:
+def check(visible: dict[str, Node], ignore_pairs: set[frozenset[str]], pinned: set[str] = frozenset(),
+          template: str = "default", logo: bool = True) -> list[str]:
     boxes = {}
     for name, node in visible.items():
         b = node.bbox()
         if b is None or (b.width == 0 and b.height == 0):
             continue
         boxes[name] = (b.x0, b.x1, b.y0, b.y1)
-    return check_boxes(boxes, ignore_pairs, pinned)
+    return check_boxes(boxes, ignore_pairs, pinned, template, logo)
 
 
 def solver_items(visible: dict[str, Node], definitions: dict[str, dict], fixed: set[str] = frozenset()) -> list[solver.Item]:

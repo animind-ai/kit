@@ -304,6 +304,13 @@ COL, ROW = 1.36, 1.17
 class DiffTable(Widget):
     name = "diff_table"
 
+    def _sz(self, size: float) -> float:
+        """字号；后端给了 opts["min_text"]（v2 的全局下限换成 kit 字号）时不小于它。"""
+        return max(size, float(self.opts.get("min_text", 0.0)))
+
+    def smallest_text(self) -> float:
+        return self._sz(17)
+
     def build(self) -> Built:
         t = self.theme
         rows = self.definition["rows"]
@@ -319,13 +326,13 @@ class DiffTable(Widget):
         for r, values in enumerate(self.values):
             row = []
             for i, v in enumerate(values):
-                m = mmath(str(v), 42, self.colors[r]).move_to([x0 + i * COL + r * COL / 2, y0 - r * ROW])
+                m = mmath(str(v), self._sz(42), self.colors[r]).move_to([x0 + i * COL + r * COL / 2, y0 - r * ROW])
                 if i >= self.shown[r]:
                     m.set_style(opacity=0.0)
                 row.append(m)
             self.cells.append(row)
-            label = Group(mmath(rows[r].get("label", f"${rows[r]['data']}$"), 34, self.colors[r]),
-                          mtext(rows[r].get("name", ""), 17, self.colors[r]))
+            label = Group(mmath(rows[r].get("label", f"${rows[r]['data']}$"), self._sz(34), self.colors[r]),
+                          mtext(rows[r].get("name", ""), self._sz(17), self.colors[r]))
             arrange(list(label), DOWN, gap=0.06)
             label.move_to([x0 - 1.25, y0 - r * ROW])
             table.add(label)
@@ -434,6 +441,7 @@ REGISTRY: dict[str, type[Widget]] = {
     "seq_table": __import__("animind_kit.mx.table", fromlist=["SeqTable"]).SeqTable,  # 数例表在 table.py（竞赛题"先试几步"，一列列露）
     "line_chart": __import__("animind_kit.mx.chart", fromlist=["LineChart"]).LineChart,  # 折线图在 chart.py（几个量随项数的升降）
 }
+REGISTRY.update(__import__("animind_kit.mx.cs", fromlist=["REGISTRY"]).REGISTRY)  # 编程课组件在 cs.py（代码面板、终端、调用栈……）
 
 
 def lookup(name: str) -> type[Widget] | None:

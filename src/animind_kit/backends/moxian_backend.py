@@ -52,8 +52,8 @@ from .. import analysis, beat_cache, lint, segments, subtitles, timing
 from ..mx import layout, scan, widgets
 from ..mx.readout import Readout
 from ..mx.shape import build_shape
-from ..mx.text import SCALE, mmath, mtext, rich
-from ..regions import Region
+from ..mx.text import SCALE, mmath, mtext, rich, set_fonts
+from ..regions import FRAME_WIDTH, MARGIN, Region
 from ..theme import Theme
 
 DEFAULT_DUR = {
@@ -64,6 +64,7 @@ DEFAULT_DUR = {
 CAMERA_ZOOM = 2.0  # camera 只给 target 时的默认放大倍数
 CAMERA_MARGIN = 0.5  # fit 时四周留白（画面单位）
 CAMERA_EXEMPT_REGIONS = ("top", "footer")  # 这些区域的对象不跟镜头走
+V2_MIN_FONT = 40.5  # v2 版式的全局字号下限：font_size 22 = 40.5px，按渲染画面（1080p）量，烧录字幕缩到 0.88 之前
 WIDGET_DUR = 0.5
 LEVELS = {"display": 1.5, "title": 1.25, "body": 1.0, "caption": 0.75}  # scene-spec 的 level → 字号倍数
 
@@ -71,6 +72,12 @@ LEVELS = {"display": 1.5, "title": 1.25, "body": 1.0, "caption": 0.75}  # scene-
 def side_floor(definition: dict) -> str:
     """侧栏文字的字号下限类别：level: caption 是注释（side_note，比正文小一档），其余按侧栏下限（side）。"""
     return "side_note" if definition.get("level") == "caption" else "side"
+
+
+# 讲座版式（style.layout: lecture）的字号照编程课的 cs_style：正文 30、公式 40，标题页大字 80
+LECTURE_SIZES = {"text": 30, "math": 40}
+LECTURE_LEVELS = {"display": 50 / 30, "title": 40 / 30, "body": 1.0, "caption": 24 / 30}
+LECTURE_FONT_SCALE = {"text": 1.32, "code": 1.45}  # 见 mx/text.py 的 FONT_SCALE
 CUE_LATE = 0.4
 SIZES = {"l": (854, 480, 15), "m": (1280, 720, 30), "h": (1920, 1080, 30)}
 # 暂停提示条（pause: think / predict 的留白）：底部一条「可以按暂停」+ 倒计时进度条。固定几秒永远不合每个人的
@@ -227,18 +234,29 @@ class MoxianCompiler:
     def __init__(self, doc: dict, theme: Theme, audio_dir: Path | None, log=print, quality: str = "l",
                  spec_dir: Path | None = None):
         self.doc, self.t, self.audio_dir, self.log = doc, theme, audio_dir, log
-        self.spec_dir = spec_dir or Path(".")  # clip 的 src 相对场景文件所在目录
+        self.spec_dir = spec_dir or Path(".")  # 场景文件所在目录：clip 的 src、组件里的相对路径（图片）都按它解析
+        self.base_dir = self.spec_dir  # 讲座组件（image 等）用的名字，和 spec_dir 是同一个目录
         self.quality = quality
         self.width, self.height, self.fps = SIZES[quality]
         try:  # data 的 {src} 读成文件里的内容（和 scene-spec 检查读的是同一份）
             self.data = spec_curves.load_data(doc, self.spec_dir)
         except spec_curves.DataError as exc:
             raise SystemExit(f"{exc.code} {exc.message}") from exc
+        style = doc.get("style", {})
+        self.template = style.get("layout", "default")  # 分区模板：default | lecture（讲座版式）| v2（视觉规范 v2）
+        self.side_column = self.template == "v2" and style.get("side") == "column"  # v2：side 是主讲区右边一栏，不并进顶栏
+        set_fonts(style.get("fonts"), log, LECTURE_FONT_SCALE if self.template == "lecture" else None)  # 建对象之前定下来
         # 场景参数跨 beat 常驻：每个 beat 的时间线从它们当时的值出发补间
         self.params = {k: Param(v, k) for k, v in spec_params.initial(doc).items()}
         self.lifetimes = analysis.lifetimes(doc)
+        # 做过 mark 的对象：底色比目标高 0.16、挂在对象里，v2 顶栏只有 1.0 高，要先留出这块
+        self.marked = {selectors.parse(str(a["target"])).obj
+                       for beat in doc.get("beats") or [] for a in beat.get("do") or []
+                       if isinstance(a, dict) and a.get("act") == "mark" and a.get("target")}
         # 字号下限（数轴标注、侧栏、练一练框）：按成片算，烧录字幕时画面整体缩小，下限相应抬高
-        self.floors = lint.floors(subtitles.picture_scale(subtitles.mode(doc)))
+        scale = subtitles.picture_scale(subtitles.mode(doc))
+        self.logo_check = scale == 1.0  # 烧录字幕时 logo 在画面外的字幕带里，不查右下角
+        self.floors = lint.floors(scale)
         self.stack_scale: dict[str, float] = {}
         self.pinned_floor: float | None = None
         self.root = Group(name="root")
@@ -266,7 +284,10 @@ class MoxianCompiler:
         self.followers: dict[int, tuple[Node, Node, Node, np.ndarray]] = {}
         self.ignore_pairs: set[frozenset[str]] = set()
         self.problems: list[str] = []
-        self.lint_config = lint.Config(min_font=float(doc.get("style", {}).get("min_font", lint.Config.min_font)),
+        # v2：任何画面文字 font_size ≥ 22，即渲染画面里 ≥ 40.5px@1080（2026-10-20 用户定：按渲染尺寸量，
+        # 不再除以烧录字幕的 0.88；成片里约 35.6px@1080 / 23.8px@720）
+        default_min = V2_MIN_FONT if self.template == "v2" else lint.Config.min_font
+        self.lint_config = lint.Config(min_font=float(doc.get("style", {}).get("min_font", default_min)),
                                        floors=self.floors)
         self.allow = lint.Allow.from_doc(doc)
         self.tracker = lint.Tracker()
@@ -274,6 +295,15 @@ class MoxianCompiler:
         self.rest_seen: set[tuple] = set()  # (beat, Problem.ident())：结束帧上见过的问题，中途的不再重复报
         self.mid_pending: list[tuple[lint.Moment, list[lint.Problem]]] = []  # 当前 beat 的，beat 播完再定
         self.warnings: list[str] = []  # 只提醒、不计入版式问题的（中途的 cross）
+        self.hints = lint.Tracker()  # v2 风格提示（§10）：只写日志，不算版式问题
+        t = self.t
+        accents = {}
+        for role, colors in (("A", [t.A, t.ink("A")]), ("B", [t.B, t.ink("B")]), ("C", [t.C, t.ink("C")]),
+                             ("NO", [t.NO, t.ink("NO")]), ("HL", [t.HL, t.HL_INK, t.MARK])):
+            for c in colors:
+                accents[scan._hex(c)] = role
+        quiet = {scan._hex(c) for c in (t.FG, t.DIM, t.DIM_INK or t.DIM, t.BG, t.CARD, t.ink("DIM"), t.ink("FG"))}
+        self.hint_style = lint.Style({k: v for k, v in accents.items() if k and k not in quiet}, quiet)
         self.offset = 0.0  # 当前 beat 在整支片子里的起点（秒）
         self.stats = {"beats": 0, "actions": 0, "cue_late": 0}
         self.seg = segments.SegmentState()  # 残影、常驻（跨 beat）
@@ -294,33 +324,40 @@ class MoxianCompiler:
     def build_object(self, obj_id: str, definition: dict, opts: dict | None = None) -> Built:
         built = self._build_object(obj_id, definition, opts)
         # 侧栏里的文字：字号不低于侧栏下限（组件自己标了类别的，例如练一练框，按组件的）；level: caption 按注释的下限
-        if analysis.region_static(self.doc, obj_id) == "side" and getattr(built.node, "font_floor", None) is None:
+        if self._side_floor(obj_id) and getattr(built.node, "font_floor", None) is None:
             built.node.font_floor = side_floor(definition)
         return built
 
+    def _side_floor(self, obj_id: str) -> bool:
+        """侧栏字号下限只管窄侧栏（公式常驻）；讲座版式的 side 是半个画面宽的一栏，按正文算。"""
+        return self.template != "lecture" and analysis.region_static(self.doc, obj_id) == "side"
+
     def _build_object(self, obj_id: str, definition: dict, opts: dict | None = None) -> Built:
         t = self.t
-        side = analysis.region_static(self.doc, obj_id) == "side"
+        side = self._side_floor(obj_id)
         if "widget" in definition:
             cls = widgets.lookup(definition["widget"])
             if cls is None:
                 raise NotImplementedError(f"kit（墨线）还没有组件 {definition['widget']!r}（对象 {obj_id}）")
             plan = getattr(cls, "plan_opts", None)  # 组件要先看一眼整篇文档才能排版的（solid 的 orbit 会经过哪些视角）
             opts = {**({"min_size": self.min_size("practice")} if definition["widget"] == "think_box" else {}),
-                    **(plan(self.doc, obj_id) if plan else {}), **(opts or {})}
+                    **(plan(self.doc, obj_id) if plan else {}),
+                    "base_dir": self.base_dir, "acts": analysis.acts_on(self.doc, obj_id), **(opts or {})}
             w = cls(obj_id, definition, t, self.data, self.params, opts=opts)
             return Built(w.node, definition, w, w.built.spans, w.built.parts, w.built.items)
         kind = definition["type"]
         role = definition.get("role")
-        level = LEVELS[definition.get("level", "body")]
+        lecture = self.template == "lecture"
+        level = (LECTURE_LEVELS if lecture else LEVELS)[definition.get("level", "body")]
+        text_size, math_size = (LECTURE_SIZES["text"], LECTURE_SIZES["math"]) if lecture else (36, 40)
         floor = self.min_size(side_floor(definition)) if side else 0.0
         if kind == "text":
-            r = rich(definition["text"], t, size=max(36 * level, floor), color=t.ink(role))
+            r = rich(definition["text"], t, size=max(text_size * level, floor), color=t.ink(role))
             return Built(r.node, definition, spans=r.spans)
         if kind == "math":
-            return Built(mmath(r"\displaystyle " + definition["tex"], max(40 * level, floor), t.ink(role)), definition)
+            return Built(mmath(r"\displaystyle " + definition["tex"], max(math_size * level, floor), t.ink(role)), definition)
         if kind == "readout":
-            return Built(Readout(definition, t, self.params, max(36 * level, floor)).node, definition)
+            return Built(Readout(definition, t, self.params, max(text_size * level, floor)).node, definition)
         if kind == "clip":
             return Built(self._build_clip(obj_id, definition), definition)
         if kind == "shape":
@@ -403,16 +440,26 @@ class MoxianCompiler:
         """
         built = self.objects[obj_id]
         w = built.widget
-        kind = getattr(w, "label_floor", None)
-        if w is None or kind is None or getattr(w, "acted", False):
+        if w is None or getattr(w, "acted", False):
             return False
-        target = self.floors.get(kind, 0.0)
-        em = w.label_size * SCALE * self.world_scale(built.node)
-        if not target or em >= target - 0.05:
+        s = SCALE * self.world_scale(built.node)
+        opts = {k: w.opts[k] for k in ("label_size", "min_text") if k in w.opts}
+        kind = getattr(w, "label_floor", None)
+        if kind is not None:
+            target = self.floors.get(kind, 0.0)
+            em = w.label_size * s
+            if target and em < target - 0.05:
+                opts["label_size"] = w.label_size * target / em * 1.01
+        # v2：组件里最小的字（刻度数字、计数、表头小字……）也守全局下限 font_size 22（渲染画面 40.5px）。
+        # 组件给出 smallest_text()（kit 字号）并接受 opts["min_text"]（把比它小的字抬到它）时才做
+        smallest = getattr(w, "smallest_text", None)
+        if self.template == "v2" and smallest is not None and smallest() * s < self.lint_config.min_font - 0.05:
+            opts["min_text"] = max(float(w.opts.get("min_text", 0.0)), self.lint_config.min_font / s * 1.02)
+        if opts == {k: w.opts[k] for k in ("label_size", "min_text") if k in w.opts}:
             return False
         if not any(n is built.node for n in self.root.children):
             return False  # 在 group 里：整组一起排版，不单独重建
-        fresh = self._build_object(obj_id, built.definition, {"label_size": w.label_size * target / em * 1.01})
+        fresh = self._build_object(obj_id, built.definition, opts)
         fresh.node.font_floor = getattr(built.node, "font_floor", None)
         fresh.node.set_style(opacity=0.0)
         index = next(i for i, n in enumerate(self.root.children) if n is built.node)
@@ -509,7 +556,7 @@ class MoxianCompiler:
     def region(self, obj_id: str) -> Region:
         """对象所在区域。顶上有钉住的对象时，主讲区和侧栏的上沿取它的实际下沿，而不是固定比例。"""
         usage = analysis.usage_for(self.doc, self.lifetimes, obj_id)
-        r = layout.regions(*usage)[self.region_of(obj_id)]
+        r = layout.regions(*usage, template=self.template, side_column=self.side_column)[self.region_of(obj_id)]
         if usage[0] and r.name in ("stage", "side") and self.pinned_floor is not None:
             r = replace(r, y1=self.pinned_floor)
         return r
@@ -575,6 +622,8 @@ class MoxianCompiler:
         factor = self.stack_scale.get(obj_id, 1.0)
         if factor < 1.0:
             built.node.scale(factor)
+        if self.template == "v2" and region.name == "top" and obj_id in self.marked:
+            layout.fit(built.node, region, max_height=(region.height * 0.96 - 0.16) / region.height)
         below = 0.0
         relative = any(k in d for k in ("below", "above", "left_of", "right_of", "over", "within", "pin", "at"))
         if not relative:
@@ -838,7 +887,7 @@ class MoxianCompiler:
 
     def _end_checks(self, beat_id: str, plan: _Plan) -> None:
         pinned = {k for k, v in self.objects.items() if v.definition.get("pin")} | self.seg.pinned
-        found = layout.check(self.visible, self.ignore_pairs, pinned)
+        found = layout.check(self.visible, self.ignore_pairs, pinned, self.template, self.logo_check)
         if plan.inner.schedules:  # 参数采样按逻辑时刻，用定格之前的时间线
             found += self._param_layout(plan.inner, plan.snapshots, pinned, {p.split("（")[0] for p in found})
         for problem in found:
@@ -876,14 +925,22 @@ class MoxianCompiler:
         else:
             self.mid_lint_at(beat_id, sample)
 
-    def _lint_now(self, labels: dict[int, scan.Label], time: float) -> list[lint.Problem]:
-        things = scan.scan(self.root, labels, self.camera, self.lint_config.min_opacity, time)
+    def _scan_now(self, labels: dict[int, scan.Label], time: float) -> list[lint.Thing]:
+        return scan.scan(self.root, labels, self.camera, self.lint_config.min_opacity, time)
+
+    def _check(self, things: list[lint.Thing]) -> list[lint.Problem]:
         return lint.check(things, self.lint_config, self.allow, self.ignore_pairs, framed=not self.camera.is_identity())
 
+    def _lint_now(self, labels: dict[int, scan.Label], time: float) -> list[lint.Problem]:
+        return self._check(self._scan_now(labels, time))
+
     def lint_at(self, beat_id: str, sample: _Sample) -> list[tuple[int, lint.Problem]]:
-        problems = self._lint_now(self.labels(), sample.time)
+        things = self._scan_now(self.labels(), sample.time)  # 版式检查和 v2 风格提示看同一次扫描
+        problems = self._check(things)
         moment = lint.Moment(beat_id, sample.time, sample.source, self.offset + sample.time)
         self.rest_seen |= {(beat_id, p.ident()) for p in problems}
+        if self.template == "v2":
+            self.hints.see(moment, lint.style_hints(things, self.hint_style))
         return self.tracker.see(moment, problems)
 
     def mid_lint_at(self, beat_id: str, sample: _Sample) -> None:
@@ -923,6 +980,13 @@ class MoxianCompiler:
             else:
                 self.warnings.append(f.line())
                 self.log(f"WARN {f.line()}")
+        for f in self.hints.findings:  # 只是提示：不进 problems，不影响退出码
+            self.log(f"HINT {f.line()}")
+        if self.hints.findings:
+            kinds = {}
+            for f in self.hints.findings:
+                kinds[f.problem.kind] = kinds.get(f.problem.kind, 0) + 1
+            self.log("风格提示（§10，只提示）：" + "，".join(f"{k} {n} 条" for k, n in sorted(kinds.items())))
 
     def inspect(self, only: set[str] | None = None, sheets: Path | None = None) -> list[lint.Finding]:
         """不编码视频：逐 beat 编时间线，跳到每个采样点做字形级检查；给了 sheets 就写分镜图。
@@ -973,7 +1037,7 @@ class MoxianCompiler:
             for p in final:
                 p.set(tl.param_at(p, t))
             values = "，".join(f"{p.name}={p.value:.3g}" for p in final)
-            for problem in layout.check(visible, self.ignore_pairs, pinned):
+            for problem in layout.check(visible, self.ignore_pairs, pinned, self.template, self.logo_check):
                 key = problem.split("（")[0]
                 if key not in seen:
                     seen.add(key)
@@ -1283,6 +1347,8 @@ class MoxianCompiler:
 
         def setup() -> None:
             box = self.wbox(node)
+            if self.template == "v2" and node is not built.node:
+                box = self._grow_past_text(box, built.node)
             frame.path = rounded_rect(box.width + 0.16, box.height + 0.16, 0.08)
             frame.matrix = np.eye(3)
             frame.move_to(box.center)
@@ -1295,6 +1361,29 @@ class MoxianCompiler:
         anims.append(_Overlay(fade_in(frame, DEFAULT_DUR["focus"]), setup))
         anims += [Restyle(s, DEFAULT_DUR["focus"], opacity=0.45) for s in siblings]
         return anims
+
+    def _grow_past_text(self, box: BBox, root: Node) -> BBox:
+        """v2：框住组件的一部分（例如数轴的一格）时，框线不穿过旁边的字（格两端的刻度数字）：
+        和框线相交的字整个框进来，几轮到不再相交为止。"""
+        texts: list[BBox] = []
+        stack = [root]
+        while stack:
+            n = stack.pop()
+            if isinstance(n, (Text, Tex)):
+                if n.style.opacity > 0 and (b := self.wbox(n)) is not None:
+                    texts.append(b)
+                continue
+            stack.extend(n.children)
+        for _ in range(4):
+            x0, x1, y0, y1 = box.x0 - 0.08, box.x1 + 0.08, box.y0 - 0.08, box.y1 + 0.08
+            hit = [b for b in texts
+                   if b.x0 < x1 and b.x1 > x0 and b.y0 < y1 and b.y1 > y0
+                   and not (b.x0 >= x0 and b.x1 <= x1 and b.y0 >= y0 and b.y1 <= y1)]
+            if not hit:
+                break
+            for b in hit:
+                box = box.union(b)
+        return box
 
     def _unfocus(self, obj_id: str, fade: bool = True) -> list[Animation]:
         built = self.objects[obj_id]
@@ -1348,6 +1437,17 @@ class MoxianCompiler:
                 left, right = self._circle_room(node, box)
                 deco.path = rounded_rect(box.width + left + right, box.height + 0.2, 0.12)
                 deco.move_to(box.center + np.array([(right - left) / 2, 0.0]))
+            elif self.template == "v2":
+                # v2：错的一律删除线 + 右边一个 ✗（字体里没有 ✗，画两笔）；不再整块打叉，字还认得出
+                y = (box.y0 + box.y1) / 2
+                size = min(0.5, max(0.25, box.height * 0.7))
+                whole = self.wbox(self.objects[selectors.parse(target).obj].node)  # ✗ 放在整个对象右边，不压住句末的问号
+                x = max(box.x1, whole.x1) + 0.18
+                if x + size > FRAME_WIDTH / 2 - MARGIN:  # 右边没地方（对象贴着侧栏右沿）：✗ 放到对象左边
+                    x = min(box.x0, whole.x0) - 0.18 - size
+                deco.path = (line(box.x0 - 0.04, y, box.x1 + 0.04, y)
+                             .extend(line(x, y - size / 2, x + size, y + size / 2))
+                             .extend(line(x, y + size / 2, x + size, y - size / 2)))
             else:
                 deco.path = line(box.x0, box.y0, box.x1, box.y1).extend(line(box.x0, box.y1, box.x1, box.y0))
             self._attach(deco, self.root, node)

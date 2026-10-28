@@ -44,6 +44,14 @@ def flatten(path, m: np.ndarray) -> tuple[list[np.ndarray], list[bool]]:
     return curves, closed
 
 
+def _hex(c) -> str:
+    """颜色统一成小写 #rrggbb（风格提示按它查强调色）；不是字符串的（渐变等）给空串。"""
+    if not isinstance(c, str):
+        return ""
+    c = c.strip().lower()
+    return c[:7] if c.startswith("#") and len(c) in (7, 9) else c
+
+
 def scan(root: Node, labels: dict[int, Label], camera: Camera | None = None, min_opacity: float = 0.15,
          time: float | None = None) -> list[Thing]:
     """time：成片时刻（beat 内）。片段还没开始（早于 start）时不画，不参与检查；None 表示不看开始时刻。"""
@@ -104,11 +112,18 @@ def scan(root: Node, labels: dict[int, Label], camera: Camera | None = None, min
                         text = getattr(rnode, "source", None) or getattr(rnode, "text", "") or ""
                         text = text.replace("\\displaystyle ", "")
                     things.append(Thing("text", label.owner, label.obj, tuple(b), 0, runs.setdefault(key, len(runs)),
-                                        text, em, label.act, follows=not fixed, floor=floor, slot=slot))
+                                        text, em, label.act, follows=not fixed, floor=floor, slot=slot,
+                                        color=_hex(style.fill if style.fill is not None else style.stroke),
+                                        alpha=style.opacity * (style.fill_opacity if style.fill is not None else 1.0)))
                 else:
                     curves, closed = flatten(path, screen)
+                    if fill >= min_opacity:
+                        color, alpha = _hex(style.fill), fill
+                    else:
+                        color, alpha = _hex(style.stroke), style.stroke_opacity * style.opacity
                     things.append(Thing("shape", label.owner, label.obj, tuple(b), 0, act=label.act,
-                                        curves=curves, closed=closed, stroked=stroked, fill=fill, follows=not fixed))
+                                        curves=curves, closed=closed, stroked=stroked, fill=fill, follows=not fixed,
+                                        color=color, alpha=alpha))
                 fixed_flags.append(fixed)
         for k, child in sorted(enumerate(node.children), key=lambda kc: kc[1].z):
             visit(child, m, style, label, run, fixed, anchor, floor, trail + (k,))

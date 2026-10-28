@@ -89,3 +89,14 @@ def usage_for(doc: dict, life: dict[str, set[int]], obj_id: str) -> tuple[bool, 
         if region in used:
             used[region] = True
     return used["top"], used["side"], used["footer"]
+
+
+def acts_on(doc: dict, obj_id: str) -> set[str]:
+    """场景里对这个对象做过哪些动作（组件据此预留位置，例如代码面板左边留给弯箭头的空）。"""
+    out: set[str] = set()
+    for beat in doc["beats"]:
+        for action in beat.get("do", []):
+            target = action.get("target")
+            if target and selectors.parse(target).obj == obj_id:
+                out.add(action["act"])
+    return out

@@ -9,6 +9,7 @@ requires-python = ">=3.11,<3.13"
 dependencies = [
   "manim==0.21.0",
   "moxian @ git+https://github.com/animind-ai/moxian@v0.0.1",
+  "Pygments>=2.17",
   "PyYAML>=6.0",
   "scene-spec @ git+https://github.com/animind-ai/scene-spec@v0.1.0",
   "zh-math-reading @ git+https://github.com/animind-ai/zh-math-reading@v0.1.0",
