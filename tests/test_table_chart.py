@@ -1,9 +1,10 @@
 """数例表 seq_table、折线图 line_chart、胶囊 reveal 和留白时的暂停提示条（2026-10-21 学生访谈后加的）。"""
 
+import numpy as np
 import yaml
 from scene_spec import check
 
-from animind_kit import theme
+from animind_kit import lint, theme
 from animind_kit.backends.moxian_backend import MoxianCompiler
 from animind_kit.mx import widgets
 from animind_kit.mx.chart import LineChart
@@ -104,6 +105,7 @@ def test_pause_bar_covers_the_hold_and_hides_footer():
     plan = c._plan(d["beats"][0])
     assert len(c.pause_bars) == 1
     bar = c.pause_bars[0]
+    assert bar.fixed  # 镜头变化时提示仍留在画面底部
     assert bar.style.opacity == 0.0  # 还没播
     plan.tl.seek(plan.until - 2.0)  # 留白中段：提示条在、胶囊让开
     assert bar.style.opacity > 0.9 and c.objects["plan"].node.style.opacity < 0.1
@@ -114,3 +116,42 @@ def test_pause_bar_covers_the_hold_and_hides_footer():
     plan2.tl.seek(plan2.until)
     assert all(op(col) == 1.0 for col in c.objects["table"].items)
     assert all(op(chip) == 1.0 for chip in c.objects["plan"].items)
+
+
+def test_pause_reserves_footer_and_inspect_checks_pause_frame():
+    d = doc()
+    d["objects"]["message"] = {"type": "text", "text": "Pause collision", "in": "stage"}
+    d["beats"][0]["do"].append({"with": "prev", "act": "show", "target": "message"})
+    c = MoxianCompiler(d, T, None, log=lambda *_: None)
+    assert c.region("message").y0 == c.region("plan").y1 + 0.1
+    original = c._pause_bar
+
+    def collide(pause, t0, hold):
+        animations = original(pause, t0, hold)
+        c.pause_bars[-1].move_to(c.objects["message"].node.bbox().center)
+        return animations
+
+    c._pause_bar = collide
+    findings = c.inspect()
+    assert any("pause_bar" in (f.problem.subject, f.problem.other) for f in findings)
+    assert any(m.source == "暂停提示" for f in findings for m in f.moments)
+
+
+def test_pause_reserves_footer_without_a_footer_object():
+    d = doc()
+    d["objects"].pop("plan")
+    d["beats"] = [d["beats"][0]]
+    d["beats"][0]["do"] = [{"at": "s1", "act": "show", "target": "table"}]
+    c = MoxianCompiler(d, T, None, log=lambda *_: None)
+    assert c.region("table").y0 > -3.0
+
+
+def test_pause_overlap_checks_graphic_paths():
+    c = MoxianCompiler(doc(), T, None, log=lambda *_: None)
+    bar = lint.Thing("shape", "pause_bar", "pause_bar", (-1, -1, 1, 1), 1)
+    line = lint.Thing("shape", "graph", "graph", (-2, 0, 2, 0), 0,
+                      curves=[np.array([[-2., 0.], [2., 0.]])], closed=[False], stroked=True)
+    assert any(p.kind == "covered" and p.other == "pause_bar" for p in c._check([bar, line]))
+    line.curves = [np.array([[-2., 2.], [2., 2.]])]
+    line.box = (-2, 2, 2, 2)
+    assert not c._check([bar, line])

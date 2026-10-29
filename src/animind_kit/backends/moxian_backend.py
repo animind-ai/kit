@@ -249,6 +249,9 @@ class MoxianCompiler:
         # 场景参数跨 beat 常驻：每个 beat 的时间线从它们当时的值出发补间
         self.params = {k: Param(v, k) for k, v in spec_params.initial(doc).items()}
         self.lifetimes = analysis.lifetimes(doc)
+        self.pause_beats = {i for i, beat in enumerate(doc.get("beats", []))
+                            if beat.get("pause", {}).get("type") in PAUSE_LABELS
+                            and float(beat["pause"].get("hold", 2)) > 0}
         # 做过 mark 的对象：底色比目标高 0.16、挂在对象里，v2 顶栏只有 1.0 高，要先留出这块
         self.marked = {selectors.parse(str(a["target"])).obj
                        for beat in doc.get("beats") or [] for a in beat.get("do") or []
@@ -556,6 +559,8 @@ class MoxianCompiler:
     def region(self, obj_id: str) -> Region:
         """对象所在区域。顶上有钉住的对象时，主讲区和侧栏的上沿取它的实际下沿，而不是固定比例。"""
         usage = analysis.usage_for(self.doc, self.lifetimes, obj_id)
+        if self.lifetimes.get(obj_id, set()) & self.pause_beats:
+            usage = (usage[0], usage[1], True)
         r = layout.regions(*usage, template=self.template, side_column=self.side_column)[self.region_of(obj_id)]
         if usage[0] and r.name in ("stage", "side") and self.pinned_floor is not None:
             r = replace(r, y1=self.pinned_floor)
@@ -775,6 +780,8 @@ class MoxianCompiler:
             return min(np.ceil(segments.to_video(t, tl.freezes) * self.fps - 1e-6) / self.fps, last)
 
         samples = [_Sample(frame(t), src) for t, src in ends]
+        if hold > 0 and beat["pause"].get("type") in PAUSE_LABELS:
+            samples.append(_Sample(frame(t0 + min(hold / 2, max(0.3, hold - 0.4) / 2)), "暂停提示"))
         samples.append(_Sample(last, "结束"))
         samples += self._mid_samples(inner, marked, frame, {s.time for s in samples})
         return _Plan(inner, tl, narration, until, snapshots, sorted(samples, key=lambda s: s.time))
@@ -783,7 +790,7 @@ class MoxianCompiler:
         """留白的画面：底部的胶囊先让开，提示条淡入，进度条 hold 秒缩完，再换回来。返回 (逻辑时刻, 动画)。"""
         t = self.t
         lang = "en" if str(pause.get("prompt", "")).isascii() else "zh"
-        label = mtext(PAUSE_LABELS[pause["type"]][lang], 26, t.HL_INK)
+        label = mtext(PAUSE_LABELS[pause["type"]][lang], 30, t.HL_INK)
         pill_w, pill_h = label.width + 0.6, max(0.56, label.height + 0.26)
         pill = PathNode(path=rounded_rect(pill_w, pill_h, pill_h / 2), style=Style(fill=t.CARD))
         bar_h = 0.12
@@ -798,6 +805,7 @@ class MoxianCompiler:
         track.move_to([left + PAUSE_BAR_WIDTH / 2, cy])
         fill.move_to([left + PAUSE_BAR_WIDTH / 2, cy])
         bar = Group(pill, label, track, fill, name="pause_bar")
+        bar.fixed = True
         bar.set_style(opacity=0.0)
         self.root.add(bar)
         self.pause_bars.append(bar)
@@ -914,6 +922,8 @@ class MoxianCompiler:
             out[id(pad)] = scan.Label(f"mark({sel})", selectors.parse(sel).obj, "mark")
         for act, sel, deco in self.decorations:
             out[id(deco)] = scan.Label(f"{act}({sel})", selectors.parse(sel).obj, act)
+        for bar in self.pause_bars:
+            out[id(bar)] = scan.Label("pause_bar", "pause_bar")
         for obj, ghosts in self.seg.ghosts.items():
             for name, holder in ghosts:
                 out[id(holder)] = scan.Label(name, obj, "ghost")
@@ -929,7 +939,22 @@ class MoxianCompiler:
         return scan.scan(self.root, labels, self.camera, self.lint_config.min_opacity, time)
 
     def _check(self, things: list[lint.Thing]) -> list[lint.Problem]:
-        return lint.check(things, self.lint_config, self.allow, self.ignore_pairs, framed=not self.camera.is_identity())
+        problems = lint.check(things, self.lint_config, self.allow, self.ignore_pairs, framed=not self.camera.is_identity())
+        bars = [t for t in things if t.owner == "pause_bar" and t.kind == "shape"]
+        for item in things:
+            if item.kind != "shape" or item.owner == "pause_bar" or not item.curves:
+                continue
+            starts, ends = lint.segments_of(item.curves, item.closed)
+            for bar in bars:
+                if not lint._meet(item.box, bar.box):
+                    continue
+                # Check the actual paths, not a graph's often much larger bounding box.
+                crosses = lint.crosses(starts, ends, bar.box)
+                inside = item.fill >= 0.5 and any(item.closed) and lint.covers(starts, ends, lint._grid(bar.box, 3)).any()
+                if crosses or inside:
+                    problems.append(lint.Problem("covered", item.owner, "pause_bar", "暂停提示条遮挡图形", item.box, bar.box))
+                    break
+        return problems
 
     def _lint_now(self, labels: dict[int, scan.Label], time: float) -> list[lint.Problem]:
         return self._check(self._scan_now(labels, time))
