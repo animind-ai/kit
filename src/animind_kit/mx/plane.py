@@ -7,6 +7,9 @@ complex: true 时纵轴刻度写成 i、2i、−i（复平面），轴名默认�
 mesh: true 时另有一层彩色网格（mesh_role，默认 B）跟着 warp 变形，每一帧把变形后的网格线裁在坐标范围里，
 看起来是整个平面在变（动作 warp）；原来的淡网格留在下面当参照。
 
+unit sets the pre-layout length of a mathematical unit (default 1); layout may still shrink the plane to fit.
+trace_role optionally selects the arc ink color; omitted keeps DIM. trace_width defaults to 3.
+
 画在平面上的东西都有名字（name），之后的动作按名字找。坐标都是数学坐标：
 - vector {name, v: [x, y], at: [x, y]（尾巴，默认原点）, role（默认 A）, label, side: l / r（名字在箭头的左 / 右边，默认 l）, along（名字挨着箭杆的哪一处，0 尾 … 1 头，默认 0.5）, dashed}：
   从尾巴长出一支箭头，v 是分量（终点 = at + v）；
@@ -189,13 +192,14 @@ class Plane(Widget):
     def build(self) -> Built:
         d, t = self.definition, self.theme
         self.acted = False
+        self.unit = float(d.get("unit", UNIT))
         self.label_size = float(self.opts.get("label_size", self.LABEL))
         (x0, x1), (y0, y1) = d["x"], d["y"]
         self.box = (float(x0), float(y0), float(x1), float(y1))
         self.complex = bool(d.get("complex", False))
         self.reference_visible = bool(d.get("allow_empty", False))
         node = Group(name=self.obj_id)
-        U = UNIT
+        U = self.unit
         numbers = d.get("numbers", True)
         margin = (mmath("8", self.label_size, t.FG).height + 0.35) if numbers else 0.35
         self.grid = Group(name="grid")
@@ -304,7 +308,7 @@ class Plane(Widget):
     def paint_tracks(self) -> None:
         """按参数的当前值重画：曲线画到 progress，点挪到 at。"""
         for tr, curve in self.tracks:
-            curve.path = polyline(tr.drawn(), UNIT)
+            curve.path = polyline(tr.drawn(), self.unit)
         for item, at in self.movers:
             item.pts = np.array([self.tracks[item.extra["curve"]][0].at(at())], dtype=float)
             self.paint(item, item.pts, None)
@@ -363,7 +367,7 @@ class Plane(Widget):
     # ---------- 几何 ----------
 
     def w(self, p) -> np.ndarray:
-        return np.asarray(p, dtype=float) * UNIT
+        return np.asarray(p, dtype=float) * self.unit
 
     def L(self) -> np.ndarray:
         """参数驱动的变形在参数当前值下的矩阵（没写 matrix 时是单位阵）。"""
@@ -440,7 +444,7 @@ class Plane(Widget):
             d = b - a
             if float(np.linalg.norm(d)) < 1e-9:
                 return None
-            seg = clip_line(a, d, tuple(v * UNIT for v in self.box))
+            seg = clip_line(a, d, tuple(v * self.unit for v in self.box))
             if seg is None:
                 return None
             a, b = seg
@@ -483,7 +487,7 @@ class Plane(Widget):
         """变换 m 下的整数网格线，裁在坐标范围里（再乘上参数驱动的变形）。"""
         self.mesh_shown = m
         m = self.L() @ m
-        box = tuple(v * UNIT for v in self.box)
+        box = tuple(v * self.unit for v in self.box)
         path = Path()
         if abs(np.linalg.det(m)) < 1e-6:
             self.mesh.path = path
@@ -495,7 +499,7 @@ class Plane(Widget):
         for axis in (0, 1):
             lo, hi = math.floor(pre[:, axis].min()), math.ceil(pre[:, axis].max())
             for k in range(max(lo, -60), min(hi, 60) + 1):
-                p = m[:, axis] * k * UNIT
+                p = m[:, axis] * k * self.unit
                 d = m[:, 1 - axis]
                 seg = clip_line(p, d, box)
                 if seg is not None:
@@ -742,7 +746,7 @@ class Plane(Widget):
         t = self.theme
         end = item.pts[-1]
         start = end @ rotation(-angle).T
-        r = float(np.linalg.norm(start)) * UNIT
+        r = float(np.linalg.norm(start)) * self.unit
         a0 = math.atan2(start[1], start[0])
         sweep = math.radians(angle)
         steps = max(8, int(abs(angle) / 4))
@@ -750,7 +754,9 @@ class Plane(Widget):
         for k in range(steps + 1):
             a = a0 + sweep * k / steps
             (path.move_to if k == 0 else path.line_to)(r * math.cos(a), r * math.sin(a))
-        arc = PathNode(path=path, style=Style(stroke=t.DIM, stroke_width=3, opacity=0.0))
+        color = t.ink(self.definition["trace_role"]) if "trace_role" in self.definition else t.DIM
+        width = float(self.definition.get("trace_width", 3))
+        arc = PathNode(path=path, style=Style(stroke=color, stroke_width=width, opacity=0.0))
         node = Group(arc, name=f"arc{len(self.items)}")
         self.layer.add(node)
         lab = None

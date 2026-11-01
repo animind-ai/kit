@@ -41,6 +41,9 @@
   `vector`（分量 v、尾巴 at）、`slide`（平移，`copy` 时滑过去的是虚线副本：首尾相接）、`point`（`fixed` 时钉在画面上不跟着变）、`shape`（填色多边形）、`segment`（线段）、`line`（直线：`dir` + 可选 `through`，不写 through 就是过原点的 span；或 `eq: [p, q, r]`；裁在坐标范围里，跟着变换走，特征向量在 warp 时一直躺在自己的 span 上）、
   `rotate`（绕原点转，写了 name 时画出扫过的弧；不写 name 是整个平面转）、`scale`、`warp`（`mesh: true` 的彩色网格连同所有箭头按矩阵变形，和之前的复合）、`reset`、`relabel`、`highlight` / `unhighlight`（同色光晕 + 描边加粗，`pulse` 时跳两下，跟着变换走；标某一个东西用它，不用 mark 的金色方块）、`remove`；定义里写 `matrix: [[a, b], [c, d]]`（数或参数表达式）时整个平面再按它变形，`tween` 参数时连续地跟着变（行列式、矩阵元素用 `readout` 显示）。
   名字和刻度垫了底色，网格线不穿字。向量加法、乘 i 转 90°、矩阵变形（洞察 #32–#34）用。
+  Optional plane parameters: `unit` sets the length of a mathematical unit before layout (default `1`);
+  `trace_role` selects the arc's ink color (omitted: original `DIM`), and `trace_width` sets its stroke width (default `3`).
+  Layout still fits the plane into its region. Labels keep their own font size; trace labels and arc lifetimes are unchanged.
 - **综合几何图** `mx/geometry.py`（`geometry`）：竞赛平面几何的证明图，没有坐标轴和网格。点由构造算出来，不手摆（求解器 `scene_spec.geometry.solve`，检查器和 kit 同一份代码）：
   坐标 `[x, y]`（只给自由的起始点）、圆上按方向角 `{on: c, angle}`、线段上 `{on: [A, B], t}`、`mid`、垂足 `foot`、对称 `reflect`、
   交点 `meet`（直线–直线、直线–圆、圆–圆；两个根时必须写 `not: A` / `near: P` / `far: P` / `index`）、`circumcenter` / `incenter` / `centroid` / `orthocenter`、

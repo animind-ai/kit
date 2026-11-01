@@ -92,6 +92,76 @@ def test_rotate_by_90_twice_is_times_minus_one():
     assert len(arcs) == 2 and arcs[0].label is not None
 
 
+@pytest.mark.parametrize("options,color,width", [({}, T.DIM, 3),
+                                                  ({"trace_role": "HL", "trace_width": 5}, T.HL_INK, 5)])
+def test_trace_style_preserves_geometry_and_lifetime(options, color, width):
+    p = plane(**options)
+    run(p.action("vector", {"name": "v", "v": [1, 0]}))
+    run(p.action("rotate", {"name": "v", "angle": 90}))
+    arc = next(i for i in p.items.values() if i.kind == "arc")
+    path = arc.node.children[0]
+    assert path.style.stroke == color and path.style.stroke_width == width
+    assert np.allclose(np.linalg.norm(path.path.all_points()[::3], axis=1), 1)
+    run(p.action("rotate", {"name": "v", "angle": 90, "trace": False}))
+    assert [i for i in p.items.values() if i.kind == "arc"] == [arc]
+    run(p.action("reset", {}))
+    assert not any(i.kind == "arc" for i in p.items.values())
+
+
+def test_unit_scales_coordinates_mesh_and_trace_together():
+    p = plane(unit=1.5, mesh=True)
+    run(p.action("vector", {"name": "v", "v": [1, 0]}))
+    assert np.allclose(tip(p, "v"), (1.5, 0))
+    run(p.action("rotate", {"name": "v", "angle": 90}))
+    assert np.allclose(tip(p, "v"), (0, 1.5))
+    arc = next(i for i in p.items.values() if i.kind == "arc")
+    assert np.allclose(np.linalg.norm(arc.node.children[0].path.all_points()[::3], axis=1), 1.5)
+    p.paint_mesh(np.array([[2.0, 1.0], [0.0, 1.0]]))
+    points = p.mesh.path.all_points()
+    assert points[:, 0].min() == pytest.approx(-3)
+    assert points[:, 0].max() == pytest.approx(7.5)
+    assert points[:, 1].min() == pytest.approx(-1.5)
+    assert points[:, 1].max() == pytest.approx(6)
+
+
+@pytest.mark.parametrize("unit", [0.5, 1.5, 2])
+def test_unit_scales_curves_and_parameter_driven_movers(unit):
+    from moxian.anim import Param
+    at = Param(0.25, "at")
+    p = Plane("p", {"widget": "plane", "x": [-2, 5], "y": [-1, 4], "unit": unit,
+                    "curves": [{"x": "2*t", "y": "t", "domain": [0, 1]}],
+                    "points": [{"curve": 0, "at": "at", "label": "P"}]}, T, {}, params={"at": at})
+    curve = p.tracks[0][1]
+    assert np.allclose(curve.path.all_points()[-1], np.array([2, 1]) * unit)
+    at.set(0.75)
+    item = p.movers[0][0]
+    assert np.allclose(item.pts[0], [1.5, 0.75])
+    assert np.allclose(item.node.children[0].matrix[:2, 2], np.array([1.5, 0.75]) * unit)
+
+
+@pytest.mark.parametrize("unit", [0.5, 1.5, 2])
+def test_unit_preserves_live_matrix_line_clipping_and_highlights(unit):
+    from moxian.anim import Param
+    k = Param(0.0, "k")
+    p = Plane("p", {"widget": "plane", "x": [-4, 4], "y": [-3, 3], "unit": unit, "mesh": True,
+                    "matrix": [[1, "k"], [0, 1]]}, T, {}, params={"k": k})
+    run(p.action("segment", {"name": "s", "from": [0, 0], "to": [0, 2]})
+        + p.action("line", {"name": "l", "dir": [0, 1]})
+        + p.action("point", {"name": "o", "at": [0, 2], "fixed": True})
+        + p.action("vector", {"name": "v", "v": [0, 1]}))
+    run(p.action("highlight", {"name": "s"}))
+    k.set(1.0)
+    assert np.allclose(ends(p, "l"), np.array([[-3, -3], [3, 3]]) * unit)
+    assert np.allclose(ends(p, "s"), np.array([[0, 0], [2, 2]]) * unit)
+    assert np.allclose(tip(p, "v"), np.array([1, 1]) * unit)
+    assert np.allclose(p.items["o"].node.children[0].matrix[:2, 2], np.array([0, 2]) * unit)
+    halo = p.items["s"].extra["halo"][0]
+    assert np.allclose(halo.children[0].path.subpaths[0].points()[[0, -1]], ends(p, "s"))
+    assert np.allclose(p.items["s"].pts, [[0, 0], [0, 2]])
+    assert np.allclose(p.mesh.path.all_points().min(axis=0), np.array([-4, -3]) * unit)
+    assert np.allclose(p.mesh.path.all_points().max(axis=0), np.array([4, 3]) * unit)
+
+
 def test_warp_composes_and_reset_undoes():
     p = plane(mesh=True)
     run(p.action("vector", {"name": "i", "v": [1, 0]}) + p.action("vector", {"name": "j", "v": [0, 1]}))
