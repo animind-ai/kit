@@ -30,6 +30,7 @@ EN_LINE = 44  # 英文版（字幕只有英文一行、字号和中文一样）�
 MIN_SECONDS = 0.5
 BREAK = set("，。！？；：、!?;")
 DROP_TAIL = set("，。；：、,;:")
+FALLBACK_FONTS = ("Helvetica", "Arial Unicode MS", "Apple Symbols", "DejaVu Sans", "Noto Sans")
 _BOOKMARK = re.compile(r"\{@([A-Za-z_][A-Za-z0-9_]*)\}")
 _CJK = re.compile(r"[\u3400-\u9fff]")
 _MATH = re.compile(r"(?<!\\)\$(.+?)(?<!\\)\$")
@@ -386,6 +387,7 @@ def sentence_cues(text: str, start: float, end: float, marks: dict[str, float] |
         words = shown[a:b].strip()
         while words and words[-1] in DROP_TAIL:
             words = words[:-1]
+        words = words.replace("。", ". ")  # 条内的中文句号（行尾的上面已去掉）写成英文句号
         if not words:
             continue
         out.append(Cue(_clock(anchors, a), _clock(anchors, b), words))
@@ -462,6 +464,23 @@ BAND = 0.12  # 烧录时底部字幕带占画面高度的比例（双语两行�
 TEXT_WIDTH = 0.86  # 字幕最宽占画面宽度的比例（右下角还要留给品牌角标）
 
 
+def _font_runs(text: str, face) -> list[tuple[object, str]]:
+    """按字体切段：主字体没有的字（下标 ₀ 这类）换一个有这个字的字体，不画成方框。"""
+    import skia
+
+    runs: list[tuple[object, str]] = []
+    for ch in text:
+        chosen = face
+        if face.unicharToGlyph(ord(ch)) == 0:
+            backups = (skia.Typeface(name) for name in FALLBACK_FONTS)
+            chosen = next((t for t in backups if t.unicharToGlyph(ord(ch))), face)
+        if runs and runs[-1][0].getFamilyName() == chosen.getFamilyName():
+            runs[-1] = (runs[-1][0], runs[-1][1] + ch)
+        else:
+            runs.append((chosen, ch))
+    return runs
+
+
 def burn(video: Path, cues: list[Cue], out: Path, background: str, ink: str, work: Path) -> Path:
     """烧录：画面缩到 (1-BAND)，底部让出字幕带，字幕用 Noto Sans CJK SC 画成 PNG 按时间叠上去。
 
@@ -487,12 +506,16 @@ def burn(video: Path, cues: list[Cue], out: Path, background: str, ink: str, wor
     en_paint = skia.Paint(Color=soft, AntiAlias=True)
 
     def draw(canvas, text: str, size: float, paint, baseline: float) -> None:
-        font = skia.Font(face, size)
-        width = font.measureText(text)
+        runs = _font_runs(text, face)
+        width = sum(skia.Font(f, size).measureText(t) for f, t in runs)
         if width > w * TEXT_WIDTH:
-            font = skia.Font(face, size * w * TEXT_WIDTH / width)
-            width = font.measureText(text)
-        canvas.drawString(text, (w - width) / 2, baseline, font, paint)
+            size *= w * TEXT_WIDTH / width
+            width = sum(skia.Font(f, size).measureText(t) for f, t in runs)
+        x = (w - width) / 2
+        for f, t in runs:
+            font = skia.Font(f, size)
+            canvas.drawString(t, x, baseline, font, paint)
+            x += font.measureText(t)
 
     def card(cue: Cue | None, name: str) -> Path:
         surface = skia.Surface(w, band)

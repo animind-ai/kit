@@ -228,3 +228,18 @@ def test_word_times_from_align_place_cue_starts():
 def test_english_cues_do_not_merge_across_sentences():
     text = "Take two of those parts. Where do we stop?"
     assert [text[a:b].strip() for a, b in sub.en_chunks(text)] == ["Take two of those parts.", "Where do we stop?"]
+
+
+def test_period_inside_a_cue_is_written_in_english_style():
+    cues = sub.sentence_cues("这是轨道。有的地方缓。", 0.0, 4.0)
+    assert [c.text for c in cues] == ["这是轨道. 有的地方缓"]
+
+
+def test_glyphs_missing_from_the_main_font_use_a_fallback_font():
+    from moxian.text.font import typeface
+
+    face = typeface("Noto Sans CJK SC")
+    runs = sub._font_runs("记作 f'(x₀)", face)
+    assert "".join(t for _, t in runs) == "记作 f'(x₀)"
+    for font, chunk in runs:
+        assert all(font.unicharToGlyph(ord(ch)) != 0 for ch in chunk)
